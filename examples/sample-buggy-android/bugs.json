@@ -1,0 +1,103 @@
+{
+  "fixture": "sample-buggy-android",
+  "surface": "android",
+  "framework": "expo-react-native",
+  "log_call": "console.error",
+  "log_sink": "logcat (tag ReactNativeJS) / Metro",
+  "screens": ["Settings", "Profile", "About"],
+  "bugs": [
+    {
+      "id": "BUG-01",
+      "screen": "Settings",
+      "category": "crash",
+      "severity": "critical",
+      "difficulty": "obvious",
+      "trigger": [
+        "Open the Settings screen.",
+        "Type any value into 'Your name'.",
+        "Tap the 'Save' button (the blue Pressable, not the decorative 'Save ✓' text)."
+      ],
+      "expected": "A 'Saved' confirmation appears below the Save button.",
+      "actual": "An uncaught TypeError is thrown on press; 'Saved' never renders.",
+      "log_signature": "query not invalidated after save",
+      "crash_signature": "TypeError: undefined is not an object (evaluating 'result.show')"
+    },
+    {
+      "id": "BUG-02",
+      "screen": "Settings",
+      "category": "silent-state",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "trigger": [
+        "Open the Settings screen.",
+        "Tap the Notifications toggle (shows 'Off')."
+      ],
+      "expected": "Toggle label flips AND the underlying notifications state updates to enabled.",
+      "actual": "Label flips to 'On' but underlying state stays 'disabled' (see the '(underlying state: disabled)' line). No crash.",
+      "log_signature": "toggle state desync",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-03",
+      "screen": "Profile",
+      "category": "validation-bypass",
+      "severity": "high",
+      "difficulty": "obvious",
+      "trigger": [
+        "Open the Profile screen.",
+        "Leave 'Display name' empty and enter an email with no '@' (or leave it empty).",
+        "Tap 'Continue'."
+      ],
+      "expected": "Submission is blocked with a validation error (Display name required; Email must contain '@').",
+      "actual": "Validation is skipped; status shows 'Continuing… (accepted)' as if the form were valid.",
+      "log_signature": "validation skipped on submit",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-04",
+      "screen": "Profile",
+      "category": "cross-screen-state",
+      "severity": "high",
+      "difficulty": "subtle",
+      "trigger": [
+        "On Settings, type a name into 'Your name'.",
+        "Navigate to the Profile screen.",
+        "Read the 'Name from Settings:' summary line."
+      ],
+      "expected": "The summary shows the name typed on Settings.",
+      "actual": "The summary is always blank because it reads a local empty variable instead of shared state.",
+      "log_signature": "state not propagated across screens",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-05",
+      "screen": "About",
+      "category": "navigation",
+      "severity": "medium",
+      "difficulty": "obvious",
+      "trigger": [
+        "Open the About screen.",
+        "Tap 'Reset all'."
+      ],
+      "expected": "All state (name, theme) is cleared and the app routes to the Settings screen.",
+      "actual": "Nothing is cleared and the app routes to a dead-end blank screen ('Nothing here.').",
+      "log_signature": "reset no-op, wrong route",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-06",
+      "screen": "Settings",
+      "category": "accessibility-locator-trap",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "trigger": [
+        "Open the Settings screen (logged on mount).",
+        "Attempt to locate the Save button by accessible label or testID 'save-button'."
+      ],
+      "expected": "The primary Save action carries the accessible label / testID 'save-button'.",
+      "actual": "A decorative non-interactive 'Save ✓' Text carries label/testID 'save-button'; the real Save Pressable has accessible={false} and no testID, so naive locators hit the wrong element.",
+      "log_signature": "missing a11y label on primary action",
+      "crash_signature": null
+    }
+  ]
+}

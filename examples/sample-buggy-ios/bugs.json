@@ -1,0 +1,105 @@
+{
+  "fixture": "sample-buggy-ios",
+  "surface": "ios",
+  "framework": "SwiftUI",
+  "bundle_id": "com.inspector.SampleBuggyApp",
+  "screens": ["Settings", "Profile", "About"],
+  "log_call": "NSLog",
+  "crash_idiom": "array index out of range",
+  "bugs": [
+    {
+      "id": "BUG-01",
+      "screen": "Settings",
+      "type": "crash",
+      "severity": "critical",
+      "difficulty": "obvious",
+      "trigger": [
+        "Open Settings",
+        "Type any value into 'Your name'",
+        "Tap the Save button"
+      ],
+      "expected": "A green 'Saved' confirmation appears below the field.",
+      "actual": "App logs the signature then crashes with a fatal index-out-of-range before the confirmation is set; 'Saved' never appears.",
+      "log_signature": "query not invalidated after save",
+      "crash_signature": "Fatal error: Index out of range"
+    },
+    {
+      "id": "BUG-02",
+      "screen": "Settings",
+      "type": "silent-state",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "trigger": [
+        "Open Settings",
+        "Tap the Notifications toggle"
+      ],
+      "expected": "The toggle label flips and app.notificationsEnabled updates to match.",
+      "actual": "The visual label flips (On/Off) but app.notificationsEnabled stays false; underlying state desyncs. No crash.",
+      "log_signature": "toggle state desync",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-03",
+      "screen": "Profile",
+      "type": "validation-bypass",
+      "severity": "high",
+      "difficulty": "subtle",
+      "trigger": [
+        "Open Profile",
+        "Leave 'Display name' empty",
+        "Enter an email with no '@' (e.g. 'foo')",
+        "Tap Continue"
+      ],
+      "expected": "Continue is blocked because Display name is required and Email must contain '@'.",
+      "actual": "App logs the signature then proceeds as if valid, showing the Result section.",
+      "log_signature": "validation skipped on submit",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-04",
+      "screen": "Profile",
+      "type": "cross-screen-state",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "trigger": [
+        "On Settings, type a name into 'Your name'",
+        "Navigate to Profile",
+        "Read the 'Saved from Settings' summary"
+      ],
+      "expected": "The summary shows the name entered on Settings.",
+      "actual": "The summary always renders blank ('—'); the Settings name never propagates across screens.",
+      "log_signature": "state not propagated across screens",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-05",
+      "screen": "About",
+      "type": "navigation-defect",
+      "severity": "high",
+      "difficulty": "obvious",
+      "trigger": [
+        "Open About",
+        "Tap 'Reset all'"
+      ],
+      "expected": "All state is cleared and the app returns to the Settings root.",
+      "actual": "Nothing is cleared and the app routes to the wrong screen (Profile is pushed).",
+      "log_signature": "reset no-op, wrong route",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-06",
+      "screen": "Settings",
+      "type": "accessibility-locator-trap",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "trigger": [
+        "Open Settings",
+        "Locate the primary 'Save' action by accessible label or test id"
+      ],
+      "expected": "The functional Save button exposes an accessible label/identifier of 'Save'.",
+      "actual": "The Save button has no accessible label and no test id; a decorative seal badge carries label/id 'Save', so naive locators tap the wrong (dead) element.",
+      "log_signature": "missing a11y label on primary action",
+      "crash_signature": null
+    }
+  ]
+}

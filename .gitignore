@@ -17,5 +17,6 @@ replays/
 # iOS / Xcode (generated)
 *.xcodeproj
 DerivedData/
+examples/sample-buggy-ios/Sources/Info.plist
 # Redroid volume
 infra/android-redroid/data/

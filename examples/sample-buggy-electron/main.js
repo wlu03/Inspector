@@ -1,6 +1,10 @@
 const { app, BrowserWindow } = require("electron");
 const path = require("path");
 
+// Expose the renderer's DevTools/console over CDP so an external testing agent
+// can observe console.error and uncaught errors. Must be set before app ready.
+app.commandLine.appendSwitch("remote-debugging-port", "9223");
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 800,

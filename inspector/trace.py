@@ -58,3 +58,7 @@ class TraceRecorder:
     def save_run(self, run: Run) -> None:
         with open(os.path.join(self.dir, "run.json"), "w") as f:
             f.write(run.model_dump_json(indent=2))
+
+    def save_plan(self, plan) -> None:
+        with open(os.path.join(self.dir, "plan.json"), "w") as f:
+            f.write(plan.model_dump_json(indent=2))

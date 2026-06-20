@@ -4,7 +4,7 @@ import SwiftUI
 struct SampleBuggyApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
         }
     }
 }

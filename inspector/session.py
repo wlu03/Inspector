@@ -26,6 +26,7 @@ class Session:
         self.guard = LoopGuard(config.max_iterations, config.max_wall_clock_s)
         self.last_elements: list[Element] = []
         self.action_seq = 0
+        self.plan = None  # TestPlan, set via the set_plan tool
 
     # --- lifecycle ---
     def launch(self, dev_command: str | None = None) -> bool:

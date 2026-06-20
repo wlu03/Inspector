@@ -1,0 +1,99 @@
+{
+  "surface": "electron",
+  "app": "sample-buggy-electron",
+  "run": "npm install && npm run dev",
+  "remote_debugging_port": 9223,
+  "log_channel": "renderer console (console.error), observable over CDP",
+  "bugs": [
+    {
+      "id": "BUG-01",
+      "screen": "Settings",
+      "category": "crash",
+      "severity": "critical",
+      "difficulty": "obvious",
+      "trigger": [
+        "Open the app (Settings screen).",
+        "Type a name into the 'Your name' input.",
+        "Click the real Save button (the primary control, not the decoy label)."
+      ],
+      "expected": "The name is saved and a green 'Saved' confirmation appears in the toast area.",
+      "actual": "An uncaught TypeError is thrown (method called on undefined); 'Saved' never appears.",
+      "log_signature": "query not invalidated after save",
+      "crash_signature": "TypeError: Cannot read properties of undefined (reading 'show')"
+    },
+    {
+      "id": "BUG-02",
+      "screen": "Settings",
+      "category": "silent-state",
+      "severity": "low",
+      "difficulty": "subtle",
+      "trigger": [
+        "On Settings, click the 'Notifications' toggle."
+      ],
+      "expected": "The toggle flips and the underlying notifications state updates to match the label.",
+      "actual": "Only the visual label flips (Off/On); store.notifications never changes — UI/state desync. No crash.",
+      "log_signature": "toggle state desync",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-03",
+      "screen": "Profile",
+      "category": "validation-bypass",
+      "severity": "high",
+      "difficulty": "subtle",
+      "trigger": [
+        "Navigate to Profile.",
+        "Leave 'Display name' empty and enter an email without '@'.",
+        "Click 'Continue'."
+      ],
+      "expected": "Submission is blocked: Display name is required and Email must contain '@'.",
+      "actual": "Validation is skipped; the form proceeds as if valid and shows 'Continued'.",
+      "log_signature": "validation skipped on submit",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-04",
+      "screen": "Profile",
+      "category": "broken-cross-screen-state",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "trigger": [
+        "Set a name on Settings (intent).",
+        "Navigate to Profile and read the read-only summary."
+      ],
+      "expected": "The summary shows the name saved on Settings.",
+      "actual": "The summary reads a cache that is never updated, so it always renders blank/stale.",
+      "log_signature": "state not propagated across screens",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-05",
+      "screen": "About",
+      "category": "navigation-defect",
+      "severity": "high",
+      "difficulty": "obvious",
+      "trigger": [
+        "Navigate to About.",
+        "Click 'Reset all'."
+      ],
+      "expected": "All state is cleared and the app returns to the Settings screen.",
+      "actual": "Nothing is cleared and the app routes to the wrong screen (Profile).",
+      "log_signature": "reset no-op, wrong route",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-06",
+      "screen": "Settings",
+      "category": "accessibility-locator-trap",
+      "severity": "low",
+      "difficulty": "subtle",
+      "trigger": [
+        "On Settings, locate the Save control by its visible/accessible label 'Save' and click it."
+      ],
+      "expected": "The primary Save action runs (see BUG-01).",
+      "actual": "The obvious 'Save' label sits on a decorative element; the real button has no accessible name. Naive locators hit the decoy, which does nothing.",
+      "log_signature": "missing a11y label on primary action",
+      "crash_signature": null
+    }
+  ]
+}

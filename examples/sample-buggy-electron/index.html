@@ -4,16 +4,109 @@
     <meta charset="UTF-8" />
     <title>Sample Buggy Electron</title>
     <style>
-      body { font-family: system-ui, sans-serif; max-width: 480px; margin: 4rem auto; }
-      input, button { font-size: 1rem; padding: 0.5rem; }
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 520px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      body[data-theme="light"] { background: #fff; color: #111; }
+      body[data-theme="dark"] { background: #111; color: #eee; }
+      nav { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+      nav a {
+        padding: 0.4rem 0.8rem;
+        border: 1px solid #888;
+        border-radius: 6px;
+        text-decoration: none;
+        color: inherit;
+      }
+      nav a.active { background: #4663ff; color: #fff; border-color: #4663ff; }
+      .screen { border-top: 1px solid #ccc; padding-top: 1rem; }
+      label { display: block; margin: 0.75rem 0; }
+      input, button, select { font-size: 1rem; padding: 0.5rem; }
+      .field { display: flex; align-items: center; gap: 0.75rem; margin: 0.75rem 0; }
+      .save-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0; }
+      .deco-label {
+        padding: 0.5rem 0.9rem;
+        border: 1px solid #888;
+        border-radius: 6px;
+        cursor: pointer;
+        user-select: none;
+      }
+      button.primary { font-size: 1.1rem; }
       #toast { margin-top: 1rem; color: green; min-height: 1.5rem; }
+      .summary { margin-top: 1rem; font-style: italic; color: #666; min-height: 1.5rem; }
+      #profileResult { margin-top: 0.5rem; color: green; min-height: 1.5rem; }
     </style>
   </head>
-  <body>
-    <h1>Settings</h1>
-    <input id="name" placeholder="Your name" />
-    <button id="save">Save</button>
-    <div id="toast"></div>
+  <body data-theme="system">
+    <nav>
+      <a href="#/settings" data-route="#/settings">Settings</a>
+      <a href="#/profile" data-route="#/profile">Profile</a>
+      <a href="#/about" data-route="#/about">About</a>
+    </nav>
+
+    <!-- ===================== Settings ===================== -->
+    <section id="screen-settings" class="screen">
+      <h1>Settings</h1>
+
+      <label>Your name
+        <input id="name" placeholder="Your name" />
+      </label>
+
+      <!--
+        BUG-06 locator trap: the decorative <span> carries the obvious "Save"
+        label/role, while the real primary button (#primaryAction) has NO
+        accessible name (its only content is aria-hidden). Naive locators that
+        match on the text/label "Save" will hit the decoy, not the real button.
+      -->
+      <div class="save-row">
+        <span id="decoSave" class="deco-label" role="button" aria-label="Save" tabindex="0">Save</span>
+        <button id="primaryAction" class="primary"><span aria-hidden="true">💾</span></button>
+      </div>
+
+      <div class="field">
+        <span>Notifications</span>
+        <button id="notifToggle" aria-pressed="false">Off</button>
+      </div>
+
+      <label>Theme
+        <select id="theme">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="system" selected>System</option>
+        </select>
+      </label>
+
+      <div id="toast"></div>
+    </section>
+
+    <!-- ===================== Profile ===================== -->
+    <section id="screen-profile" class="screen" hidden>
+      <h1>Profile</h1>
+
+      <label>Display name (required)
+        <input id="displayName" />
+      </label>
+      <label>Email (must contain "@")
+        <input id="email" />
+      </label>
+      <button id="continueBtn">Continue</button>
+
+      <!-- Should reflect the name saved on Settings (store.name). -->
+      <div id="profileSummary" class="summary"></div>
+      <div id="profileResult"></div>
+    </section>
+
+    <!-- ===================== About ===================== -->
+    <section id="screen-about" class="screen" hidden>
+      <h1>About</h1>
+      <p>Sample Buggy Electron — UI-testing fixture.</p>
+      <p>Version <span id="version">1.0.0</span></p>
+      <button id="resetAll">Reset all</button>
+    </section>
+
     <script src="renderer.js"></script>
   </body>
 </html>

@@ -1,0 +1,80 @@
+{
+  "app": "sample-buggy-web",
+  "surface": "web",
+  "framework": "Vite + vanilla HTML/JS",
+  "run": "npm install && npm run dev",
+  "bugs": [
+    {
+      "id": "BUG-01",
+      "screen": "Settings",
+      "type": "crash",
+      "severity": "critical",
+      "difficulty": "obvious",
+      "trigger": "Type any value into 'Your name', then click the Save button (the 💾 button, id=primary-action).",
+      "expected": "The 'Saved: <name>' confirmation appears in the #saved area.",
+      "actual": "An uncaught TypeError is thrown (queryCache is undefined) before the confirmation renders; #saved stays empty.",
+      "log_signature": "query not invalidated after save",
+      "crash_signature": "Uncaught TypeError: Cannot read properties of undefined (reading 'invalidate')"
+    },
+    {
+      "id": "BUG-02",
+      "screen": "Settings",
+      "type": "silent-state",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "trigger": "Click the Notifications toggle button.",
+      "expected": "The toggle label flips AND state.notifications updates to match.",
+      "actual": "The visual label flips between On/Off but state.notifications never changes (always false). No crash.",
+      "log_signature": "toggle state desync",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-03",
+      "screen": "Profile",
+      "type": "validation-bypass",
+      "severity": "high",
+      "difficulty": "subtle",
+      "trigger": "Leave 'Display name' empty and/or enter an email without '@', then click Continue.",
+      "expected": "Submission is blocked; Continue is rejected until Display name is non-empty and Email contains '@'.",
+      "actual": "Invalid input is accepted; the form proceeds and shows 'Continued ✓' as if valid.",
+      "log_signature": "validation skipped on submit",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-04",
+      "screen": "Profile",
+      "type": "broken-cross-screen-state",
+      "severity": "high",
+      "difficulty": "subtle",
+      "trigger": "Save a name on Settings (note: BUG-01 crashes the save, but state.savedName is still captured), then navigate to Profile and read the summary.",
+      "expected": "The summary reads 'Name from Settings: <name>' reflecting the Settings name.",
+      "actual": "The summary always renders blank ('Name from Settings: ') because it reads from profileMirror, which is never written.",
+      "log_signature": "state not propagated across screens",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-05",
+      "screen": "About",
+      "type": "navigation-defect",
+      "severity": "medium",
+      "difficulty": "obvious",
+      "trigger": "Click the 'Reset all' button on the About screen.",
+      "expected": "All state is cleared and the app routes back to Settings.",
+      "actual": "Nothing is cleared and the app routes to '#/gone', an unknown route that renders an empty dead-end screen.",
+      "log_signature": "reset no-op, wrong route",
+      "crash_signature": null
+    },
+    {
+      "id": "BUG-06",
+      "screen": "Settings",
+      "type": "a11y-locator-trap",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "trigger": "Use a naive locator (by text 'Save' or by [data-testid=save-button]) to find and click the Save action.",
+      "expected": "The primary Save action has an accessible name / test id and is the element matched by 'Save'.",
+      "actual": "The real button (💾, id=primary-action) has no accessible label/test id; a non-clickable decorative span carries the 'Save' text and data-testid=save-button, so naive locators hit the wrong element.",
+      "log_signature": "missing a11y label on primary action",
+      "crash_signature": null
+    }
+  ]
+}

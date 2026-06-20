@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 30rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      nav {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+        border-bottom: 1px solid #ccc;
+        padding-bottom: 0.75rem;
+      }
+      nav a {
+        text-decoration: none;
+        color: #0366d6;
+      }
+      nav a.active {
+        font-weight: bold;
+        text-decoration: underline;
+      }
+      label {
+        display: block;
+        margin-bottom: 0.25rem;
+        margin-top: 1rem;
+      }
+      input[type="text"],
+      input[type="email"],
+      select {
+        width: 100%;
+        padding: 0.5rem;
+        box-sizing: border-box;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+        margin-top: 1rem;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 1rem;
+      }
+      .confirm {
+        margin-top: 1rem;
+        color: green;
+        min-height: 1.2rem;
+      }
+      .summary {
+        margin-top: 1rem;
+        padding: 0.75rem;
+        background: #f6f8fa;
+        border-radius: 6px;
+        min-height: 1.2rem;
+      }
+      .decorative {
+        color: #999;
+        font-size: 0.85rem;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <a href="#/settings" data-route="settings">Settings</a>
+      <a href="#/profile" data-route="profile">Profile</a>
+      <a href="#/about" data-route="about">About</a>
+    </nav>
+    <main id="app"></main>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

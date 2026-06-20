@@ -36,6 +36,7 @@ Inspector plugs into Claude Code, Cursor, or any MCP-compatible coding agent. It
 | [10 — Research Notes](docs/10-research-notes.md) | Sourced findings, benchmarks, tool inventory |
 | [11 — Implementation Steps](docs/11-implementation-steps.md) | **Build-ready:** every part as ordered, concrete steps with exact APIs/commands |
 | [12 — Accounts & Services](docs/12-accounts-and-services.md) | Every platform to sign up for, by phase (v0 needs only E2B + Replicate) |
+| [13 — Agentic Test Loop](docs/13-agentic-test-loop.md) | Plan-driven QA loop: `set_plan / update_scenario / test_report` + the `run_test_session` prompt |
 
 ## Status
 
