@@ -1,6 +1,6 @@
 import io
 
-from loopback.perception.detector import OmniParserDetector
+from inspector.perception.detector import OmniParserDetector
 
 
 def _png(w, h):

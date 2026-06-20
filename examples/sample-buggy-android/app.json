@@ -4,7 +4,7 @@
     "slug": "sample-buggy-android",
     "version": "1.0.0",
     "android": {
-      "package": "com.loopback.samplebuggyandroid"
+      "package": "com.inspector.samplebuggyandroid"
     }
   }
 }

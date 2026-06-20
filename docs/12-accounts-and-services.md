@@ -1,6 +1,6 @@
 # 12 — Accounts & Services
 
-Every external platform LoopBack needs, grouped by phase. Most are gated behind a surface or the productization phase — **v0 needs only two new signups.**
+Every external platform Inspector needs, grouped by phase. Most are gated behind a surface or the productization phase — **v0 needs only two new signups.**
 
 > **Current scope (decided):** build all four surfaces (Web, Electron, Android, iOS) as a personal/dev tool. **Not** productionizing yet — no hosting, no payments, no hosted dashboard. So the [Productization (v2)](#productization-v2--hosted-dashboard-paid-tier) section is **deferred**; everything above it is in scope.
 >
@@ -14,9 +14,9 @@ Every external platform LoopBack needs, grouped by phase. Most are gated behind 
 |---|---|---|---|---|
 | **E2B** (e2b.dev) | ✅ Required | `E2B_API_KEY` | Linux desktop sandbox (boot app + screenshot + input) | Free tier + usage-based |
 | **Replicate** (replicate.com) | ✅ Required* | `REPLICATE_API_TOKEN` | Hosted OmniParser V2 (screenshot → elements) | ~$0.0064/run, pay-as-you-go |
-| Claude Code / Cursor | ✅ (have it) | — | The host coding agent LoopBack plugs into | existing |
+| Claude Code / Cursor | ✅ (have it) | — | The host coding agent Inspector plugs into | existing |
 | GitHub | ✅ (have it) | `gh` auth / token | The "open a PR, never auto-merge" guardrail | free |
-| **Anthropic API** (console.anthropic.com) | ⬜ Optional | `ANTHROPIC_API_KEY` | Only if LoopBack makes its *own* LLM calls (visual-diff judgment, K-sample confidence). The core design delegates grounding/judgment to the host agent, so **not needed for v0**. | usage-based |
+| **Anthropic API** (console.anthropic.com) | ⬜ Optional | `ANTHROPIC_API_KEY` | Only if Inspector makes its *own* LLM calls (visual-diff judgment, K-sample confidence). The core design delegates grounding/judgment to the host agent, so **not needed for v0**. | usage-based |
 
 \* Replicate is required *only if you don't self-host OmniParser* (next section). For v0, Replicate is the cheaper/faster path — skip running your own GPU.
 
@@ -29,7 +29,7 @@ Pick **one** GPU host (avoids per-run fees, lowers loop latency, but you operate
 | **Modal** (modal.com) | API token | Serverless GPU, scale-to-zero — best fit for an on-demand detector |
 | **RunPod** / **Lambda** / **Fal** | API key | Cheaper sustained GPU; more ops |
 
-> ⚠️ License flag: OmniParser's YOLOv8 detection weights are **AGPL**. Fine for internal/dev use; review before shipping LoopBack as a hosted commercial product.
+> ⚠️ License flag: OmniParser's YOLOv8 detection weights are **AGPL**. Fine for internal/dev use; review before shipping Inspector as a hosted commercial product.
 
 ## Android surface (Milestone M2 — Redroid)
 
@@ -59,7 +59,7 @@ Default iOS path = **Simulator + idb on a Mac you control**; reserve cloud Mac /
 
 | Platform | Purpose | Example |
 |---|---|---|
-| **PyPI** (pypi.org) | Publish the `loopback` package | free |
+| **PyPI** (pypi.org) | Publish the `inspector` package | free |
 | **Object storage** | Store trace artifacts (frames/logs) in hosted mode | Cloudflare R2 / AWS S3 |
 | **App hosting + DB** | Run the control-plane service + dashboard | Fly.io / Render / Railway + Neon / Supabase |
 | **Auth** | Multi-user dashboard | Clerk / Supabase Auth |

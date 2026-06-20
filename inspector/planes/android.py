@@ -18,7 +18,7 @@ class RedroidRuntime:
       screenshot:  `adb -s <serial> exec-out screencap -p`
       input:       `adb -s <serial> shell input tap|text|swipe|keyevent`
       logs:        `adb -s <serial> logcat -b crash -d`
-    The AndroidAdapter (loopback/adapters/android.py) drives this — it does NOT
+    The AndroidAdapter (inspector/adapters/android.py) drives this — it does NOT
     use the Linux plane's desktop screenshot.
     """
 

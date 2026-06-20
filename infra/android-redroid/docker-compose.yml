@@ -1,4 +1,4 @@
-# Redroid (Android-in-a-container) for the LoopBack Android surface.
+# Redroid (Android-in-a-container) for the Inspector Android surface.
 # Host prereq: binder_linux + ashmem_linux kernel modules — run ./setup-host.sh first.
 services:
   redroid:

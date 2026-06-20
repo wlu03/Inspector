@@ -14,7 +14,7 @@ from .session import SessionManager
 
 CONFIG = Config.from_env()
 MANAGER = SessionManager(CONFIG)
-mcp = FastMCP("LoopBack")
+mcp = FastMCP("Inspector")
 
 
 @atexit.register

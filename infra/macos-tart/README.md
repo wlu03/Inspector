@@ -24,15 +24,15 @@ brew install idb-companion && pip3 install fb-idb
 ```bash
 xcrun simctl boot <UDID>; xcrun simctl bootstatus <UDID> -b
 xcrun simctl install booted MyApp.app
-xcrun simctl launch --console-pty booted com.loopback.SampleBuggyApp
+xcrun simctl launch --console-pty booted com.inspector.SampleBuggyApp
 xcrun simctl io booted screenshot screen.png
 idb ui tap 100 200 ; idb ui text "hi" ; idb ui describe-all
 xcrun simctl spawn booted log stream --predicate 'processImagePath endswith "SampleBuggyApp"'
 ```
 
 ## Code
-- `loopback/planes/macos.py` (`MacOSPlane` — SSH transport into the VM)
-- `loopback/adapters/ios.py` (`IOSAdapter`) — task #10
+- `inspector/planes/macos.py` (`MacOSPlane` — SSH transport into the VM)
+- `inspector/adapters/ios.py` (`IOSAdapter`) — task #10
 - Sample app: [`../../examples/sample-buggy-ios/`](../../examples/sample-buggy-ios/)
 
 ## Note

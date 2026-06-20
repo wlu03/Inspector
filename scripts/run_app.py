@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import loopback.server as srv  # noqa: E402
+import inspector.server as srv  # noqa: E402
 from fastmcp import Client  # noqa: E402
 
 

@@ -1,6 +1,6 @@
 # infra — execution planes (the VMs)
 
-Everything LoopBack drives runs **inside a VM**, never on your host. Because the
+Everything Inspector drives runs **inside a VM**, never on your host. Because the
 iOS Simulator requires macOS, there are **two planes**:
 
 | Plane | VM | Surfaces | Dir |
@@ -9,7 +9,7 @@ iOS Simulator requires macOS, there are **two planes**:
 | **macOS** | tart VM on Apple silicon | **iOS** (Xcode Simulator + idb) | [macos-tart/](macos-tart/) |
 | _(alt iOS)_ | Corellium (virtual real iOS) | iOS | [ios-corellium/](ios-corellium/) |
 
-The `loopback/planes/` module is the code abstraction over these
+The `inspector/planes/` module is the code abstraction over these
 (`LinuxPlane`, `MacOSPlane`, `RedroidRuntime`). iOS **cannot** share the Linux
 plane — that's Apple licensing + the fact the Simulator is macOS-only.
 

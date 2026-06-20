@@ -1,7 +1,7 @@
 import io
 
-from loopback.models import Element
-from loopback.perception.som import render_set_of_mark
+from inspector.models import Element
+from inspector.perception.som import render_set_of_mark
 
 
 def _blank_png(w=200, h=120) -> bytes:

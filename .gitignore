@@ -9,7 +9,7 @@ dist/
 build/
 .pytest_cache/
 .ruff_cache/
-.loopback/
+.inspector/
 node_modules/
 scripts/_*.png
 replays/

@@ -1,7 +1,7 @@
 import json
 
-from loopback.launch.detect import detect_package_manager, detect_project
-from loopback.models import Surface
+from inspector.launch.detect import detect_package_manager, detect_project
+from inspector.models import Surface
 
 
 def _write_pkg(tmp_path, pkg: dict):

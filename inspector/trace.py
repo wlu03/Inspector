@@ -9,7 +9,7 @@ from .models import Action, Finding, Run, SessionRecord
 class TraceRecorder:
     """Writes the on-disk trace (dashboard-ready schema from docs/06).
 
-    ~/.loopback/sessions/<session_id>/
+    ~/.inspector/sessions/<session_id>/
         session.json
         run.json
         actions.jsonl      # one Action per line — the replay timeline + re-run script

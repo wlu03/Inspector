@@ -168,9 +168,9 @@ def _e(x) -> str:
 
 def _build_html(sess, frames, actions, findings, media: str = "") -> str:
     p: list[str] = []
-    p.append("<!doctype html><html><head><meta charset='utf-8'><title>LoopBack replay</title>")
+    p.append("<!doctype html><html><head><meta charset='utf-8'><title>Inspector replay</title>")
     p.append("<style>" + _CSS + "</style></head><body>")
-    p.append("<header><h1>LoopBack replay — " + _e(sess.get("id", "")) + "</h1>")
+    p.append("<header><h1>Inspector replay — " + _e(sess.get("id", "")) + "</h1>")
     p.append(
         "<div class='meta'>surface: " + _e(sess.get("surface", ""))
         + " · goal: " + _e(sess.get("goal", ""))

@@ -11,7 +11,7 @@ def _check(label: str, ok: bool, detail: str = "") -> bool:
 
 def main() -> int:
     """Preflight check: are the credentials present and the SDKs importable?"""
-    print("LoopBack doctor\n")
+    print("Inspector doctor\n")
     cfg = Config.from_env()
     required_ok = True
 
@@ -33,9 +33,9 @@ def main() -> int:
 
     print()
     if required_ok:
-        print("All required checks passed. Run the server with: python -m loopback.server")
+        print("All required checks passed. Run the server with: python -m inspector.server")
     else:
-        print("Some required checks failed — fix the above, then re-run python -m loopback.doctor")
+        print("Some required checks failed — fix the above, then re-run python -m inspector.doctor")
     return 0 if required_ok else 1
 
 

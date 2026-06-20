@@ -14,7 +14,7 @@ def _load_dotenv() -> None:
     """Load a local .env into os.environ if python-dotenv is available.
 
     Searches the current working directory upward, so running the server or
-    `python -m loopback.doctor` from the project root picks up `.env`.
+    `python -m inspector.doctor` from the project root picks up `.env`.
     """
     try:
         from dotenv import find_dotenv, load_dotenv
@@ -49,7 +49,7 @@ class Config:
 
     # Trace artifacts
     trace_root: str = field(
-        default_factory=lambda: os.path.expanduser("~/.loopback/sessions")
+        default_factory=lambda: os.path.expanduser("~/.inspector/sessions")
     )
 
     # Loop guardrails

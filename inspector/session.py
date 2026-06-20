@@ -100,7 +100,7 @@ class Session:
             action = Action(
                 seq=self.action_seq, type=action_type, target_id=target_id,
                 coords=coords, text=text, key=key, result="error", changed=False,
-                screenshot_before=frame_before, logs=[f"[loopback] action error: {exc}"],
+                screenshot_before=frame_before, logs=[f"[inspector] action error: {exc}"],
             )
             self.trace.record_action(action)
             self.action_seq += 1

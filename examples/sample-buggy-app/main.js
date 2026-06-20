@@ -1,5 +1,5 @@
 // Deliberately buggy: the Save button is supposed to show a "Saved" confirmation,
-// but it throws before updating the UI. LoopBack should catch this via:
+// but it throws before updating the UI. Inspector should catch this via:
 //   - the log tap (console.error + uncaught TypeError), and
 //   - verify-after-act (the screen does not change → `changed: false`).
 document.getElementById("save").addEventListener("click", () => {

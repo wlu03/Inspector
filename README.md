@@ -51,10 +51,10 @@ Multimodal from day one: build the **surface-agnostic core + the `SurfaceAdapter
 
 ## Code (scaffold)
 
-The Python package scaffold lives in [`loopback/`](loopback/):
+The Python package scaffold lives in [`inspector/`](inspector/):
 
 ```
-loopback/
+inspector/
   server.py        # FastMCP server: launch_app / observe / act / verify / get_findings / stop
   session.py       # Session + SessionManager — the loop (observe → act → verify-after-act)
   sandbox.py       # E2B Desktop wrapper (lazy-imported)
@@ -74,7 +74,7 @@ Quickstart:
 pip install -e ".[all]"     # or ".[dev]" for tests only
 cp .env.example .env        # add E2B_API_KEY + REPLICATE_API_TOKEN
 pytest -q                   # pure unit tests (no cloud SDKs needed)
-python -m loopback.server   # run the MCP server (stdio) — or wire via .mcp.json.example
+python -m inspector.server   # run the MCP server (stdio) — or wire via .mcp.json.example
 ```
 
 Per-part build detail (exact APIs/commands) is in [11 — Implementation Steps](docs/11-implementation-steps.md).
@@ -82,7 +82,7 @@ Per-part build detail (exact APIs/commands) is in [11 — Implementation Steps](
 ### Repo layout
 
 ```
-loopback/            # the package (core + adapters + perception + planes)
+inspector/            # the package (core + adapters + perception + planes)
   planes/            # execution planes: LinuxPlane (E2B), MacOSPlane (tart, iOS), Redroid
 infra/               # how each VM is provisioned (linux-e2b, android-redroid, macos-tart, ios-corellium)
 examples/            # one buggy sample app per surface (web, electron, android, ios)

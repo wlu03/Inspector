@@ -1,4 +1,4 @@
-# Testing LoopBack with a real agent
+# Testing Inspector with a real agent
 
 How to do tasks **#6** (validate the real agent loop in Claude Code) and **#7**
 (run on real-world web apps).
@@ -10,7 +10,7 @@ cd /Users/wesleylu/Projects/Research/LoopBack
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[all]"
 cp .env.example .env            # add E2B_API_KEY + REPLICATE_API_TOKEN
-python -m loopback.doctor       # confirm both keys + SDKs OK
+python -m inspector.doctor       # confirm both keys + SDKs OK
 ```
 
 The MCP server loads `.env` from next to the package, so it works no matter
@@ -24,23 +24,23 @@ The point: let an **actual Claude model** read the Set-of-Mark screenshot, pick
 the element, drive the loop, and fix the code — instead of our script that
 already knows the answer.
 
-### 1. Register LoopBack as an MCP server
+### 1. Register Inspector as an MCP server
 
 ```bash
-claude mcp add --transport stdio --scope user loopback \
-  -- /Users/wesleylu/Projects/Research/LoopBack/.venv/bin/loopback
+claude mcp add --transport stdio --scope user inspector \
+  -- /Users/wesleylu/Projects/Research/LoopBack/.venv/bin/inspector
 ```
 
 (Or, if you open Claude Code with this folder as the project root, the included
 `.mcp.json` is picked up automatically.) Restart Claude Code so it connects, then
-confirm with `/mcp` — you should see `loopback` with tools
+confirm with `/mcp` — you should see `inspector` with tools
 `launch_app, observe, act, verify, get_findings, stop`.
 
 ### 2. Prompt the agent to drive the loop
 
 In a Claude Code session, paste:
 
-> Use the **loopback** MCP tools to test the app at
+> Use the **inspector** MCP tools to test the app at
 > `/Users/wesleylu/Projects/Research/LoopBack/examples/sample-buggy-app`.
 > Steps: call `launch_app` on it; call `observe` and look at the numbered
 > screenshot; identify and `act`-click the **Save** button; then `observe`/`verify`
@@ -90,7 +90,7 @@ and give it a concrete goal ("verify the login flow", "add an item to the cart")
 ### What tends to break first (fix these as they show up)
 
 - **Readiness**: a framework whose ready signal / port differs (see
-  `loopback/launch/detect.py` `_FRAMEWORKS` and `web.py` `_host_port_args`).
+  `inspector/launch/detect.py` `_FRAMEWORKS` and `web.py` `_host_port_args`).
 - **Auth walls**: a login page blocks everything — the agent must log in first
   (computer-use can type credentials), or seed a session.
 - **Dense detection**: many elements → noisier Set-of-Mark; see task #15.

@@ -11,11 +11,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from loopback.config import Config  # noqa: E402
-from loopback.findings import build_finding  # noqa: E402
-from loopback.models import ActionType, Confidence, Severity, Surface  # noqa: E402
-from loopback.replay import write_replay_html, write_replay_video  # noqa: E402
-from loopback.session import Session  # noqa: E402
+from inspector.config import Config  # noqa: E402
+from inspector.findings import build_finding  # noqa: E402
+from inspector.models import ActionType, Confidence, Severity, Surface  # noqa: E402
+from inspector.replay import write_replay_html, write_replay_video  # noqa: E402
+from inspector.session import Session  # noqa: E402
 
 REPO = os.path.abspath("examples/sample-buggy-app")
 

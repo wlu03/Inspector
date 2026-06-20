@@ -1,6 +1,6 @@
 import json
 
-from loopback.adapters.electron import ElectronAdapter
+from inspector.adapters.electron import ElectronAdapter
 
 
 def test_name_hints_from_package(tmp_path):

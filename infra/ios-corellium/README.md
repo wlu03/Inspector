@@ -14,8 +14,8 @@ behavior or want zero Apple-hardware management.
 - Config: copy `config.example.json` and set your API endpoint + token.
 
 ## Code
-- `loopback/planes/` — add a `CorelliumPlane` implementing `ExecutionPlane`.
-- `loopback/adapters/ios.py` — the adapter targets either `MacOSPlane` or `CorelliumPlane`.
+- `inspector/planes/` — add a `CorelliumPlane` implementing `ExecutionPlane`.
+- `inspector/adapters/ios.py` — the adapter targets either `MacOSPlane` or `CorelliumPlane`.
 
 > This is a documented option, not the default. Start with macos-tart unless you
 > specifically need real-iOS fidelity.

@@ -1,4 +1,4 @@
-from loopback.models import Element, SessionRecord, Surface
+from inspector.models import Element, SessionRecord, Surface
 
 
 def test_center_px():

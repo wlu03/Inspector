@@ -11,17 +11,17 @@ class MacOSPlane(ExecutionPlane):
     Corellium (infra/ios-corellium/) is the alternative iOS plane.
 
     SCAFFOLD — implementation steps (see infra/macos-tart/README.md):
-      start():   `tart clone <base-image> loopback-ios`
-                 `tart run --no-graphics loopback-ios &` ; `tart ip loopback-ios`
+      start():   `tart clone <base-image> inspector-ios`
+                 `tart run --no-graphics inspector-ios &` ; `tart ip inspector-ios`
       run_sync/run_bg: ssh admin@<ip> '<cmd>'
       upload():  scp into the guest
       screenshot(): `xcrun simctl io booted screenshot -` over SSH
-      stop():    `tart stop loopback-ios` (+ optional `tart delete`)
-    The iOS adapter (loopback/adapters/ios.py) issues all simctl/idb here.
+      stop():    `tart stop inspector-ios` (+ optional `tart delete`)
+    The iOS adapter (inspector/adapters/ios.py) issues all simctl/idb here.
     """
 
     name = "macos-tart"
-    VM_NAME = "loopback-ios"
+    VM_NAME = "inspector-ios"
 
     def __init__(
         self,

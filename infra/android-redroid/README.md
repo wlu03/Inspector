@@ -28,6 +28,6 @@ adb logcat -b crash -d
 ```
 
 ## Code
-- `loopback/planes/android.py` (`RedroidRuntime`)
-- `loopback/adapters/android.py` (`AndroidAdapter`) — task #9
+- `inspector/planes/android.py` (`RedroidRuntime`)
+- `inspector/adapters/android.py` (`AndroidAdapter`) — task #9
 - Sample app to test against: [`../../examples/sample-buggy-android/`](../../examples/sample-buggy-android/)

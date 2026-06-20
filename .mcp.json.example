@@ -1,9 +1,9 @@
 {
   "mcpServers": {
-    "loopback": {
+    "inspector": {
       "type": "stdio",
       "command": "python",
-      "args": ["-m", "loopback.server"],
+      "args": ["-m", "inspector.server"],
       "env": {
         "E2B_API_KEY": "${E2B_API_KEY}",
         "REPLICATE_API_TOKEN": "${REPLICATE_API_TOKEN}"

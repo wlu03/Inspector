@@ -14,9 +14,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from loopback.adapters.web import WebAdapter  # noqa: E402
-from loopback.config import Config  # noqa: E402
-from loopback.perception.detector import OmniParserDetector  # noqa: E402
+from inspector.adapters.web import WebAdapter  # noqa: E402
+from inspector.config import Config  # noqa: E402
+from inspector.perception.detector import OmniParserDetector  # noqa: E402
 
 REPO = os.path.abspath("examples/sample-buggy-app")
 SHOT = os.path.abspath("scripts/_m0_screenshot.png")

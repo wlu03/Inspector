@@ -1,6 +1,6 @@
-# LoopBack — Deliverables
+# Inspector — Deliverables
 
-The full list of what's needed to take LoopBack from "web M0 proven" to "multimodal,
+The full list of what's needed to take Inspector from "web M0 proven" to "multimodal,
 shippable." Status: ✅ done · ◑ partial · ☐ todo · ⛔ blocked on external.
 
 Task numbers reference the tracked backlog (see also the project's task list).
@@ -19,7 +19,7 @@ Task numbers reference the tracked backlog (see also the project's task list).
 
 ## 2. Execution planes (the VMs)
 - **Linux plane (E2B)** — ◑
-  - ✅ E2B sandbox lifecycle (`loopback/sandbox.py`, `planes/linux.py`)
+  - ✅ E2B sandbox lifecycle (`inspector/sandbox.py`, `planes/linux.py`)
   - ☐ migrate web/Electron adapters onto `LinuxPlane` (currently use `E2BSandbox` directly)
   - ☐ optional self-hosted Firecracker/Cloud-Hypervisor backend
 - **macOS plane (tart)** — ☐ scaffold only

@@ -13,7 +13,7 @@ from .desktop import DesktopAdapter
 NODE_VERSION = "v22.11.0"
 NODE_DIR = "/home/user/node"
 APP_DIR = "/home/user/app"
-CONSOLE_LOG = "/tmp/loopback_console.log"
+CONSOLE_LOG = "/tmp/inspector_console.log"
 
 _WINDOW_BLOCKLIST = {
     "xfce4-screensaver", "Xfwm4", "Desktop", "xfce4-panel",
@@ -24,7 +24,7 @@ _WINDOW_BLOCKLIST = {
 # appends console.* / uncaught exceptions / log entries to a file the adapter tails.
 CDP_LISTENER_JS = r"""
 const fs = require('fs');
-const OUT = '/tmp/loopback_console.log';
+const OUT = '/tmp/inspector_console.log';
 const append = (s) => { try { fs.appendFileSync(OUT, s + '\n'); } catch (e) {} };
 async function main() {
   let page = null;
@@ -36,7 +36,7 @@ async function main() {
     } catch (e) {}
     if (!page) await new Promise(r => setTimeout(r, 500));
   }
-  if (!page) { append('[loopback] no CDP page target found'); return; }
+  if (!page) { append('[inspector] no CDP page target found'); return; }
   const attach = () => {
     const ws = new WebSocket(page.webSocketDebuggerUrl);
     ws.addEventListener('open', () => {
@@ -111,7 +111,7 @@ class WebAdapter(DesktopAdapter):
             f"google-chrome --app={self._url} --no-sandbox --disable-gpu "
             "--window-position=0,0 --window-size=1280,800 --no-first-run "
             "--disable-session-crashed-bubble --remote-debugging-port=9222 "
-            "--user-data-dir=/tmp/loopback-profile"
+            "--user-data-dir=/tmp/inspector-profile"
         )
 
         deadline = time.time() + 30

@@ -1,10 +1,10 @@
 # Linux plane — E2B Desktop
 
 The Linux microVM that hosts **web, Electron, and Android (Redroid)**. This is the
-plane that's already working for web (see `loopback/adapters/web.py`).
+plane that's already working for web (see `inspector/adapters/web.py`).
 
 - **Provisioning:** managed by E2B — `e2b_desktop.Sandbox.create(...)` (no infra to run).
-- **Code:** `loopback/planes/linux.py` (`LinuxPlane`, wraps `loopback/sandbox.py`).
+- **Code:** `inspector/planes/linux.py` (`LinuxPlane`, wraps `inspector/sandbox.py`).
 - **Contents:** Ubuntu 22.04 + XFCE + VNC, `google-chrome`, `xdotool`, Node installed on demand.
 
 ## Setup

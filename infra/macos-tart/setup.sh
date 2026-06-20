@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Provision a macOS VM with Xcode for the LoopBack iOS surface.
+# Provision a macOS VM with Xcode for the Inspector iOS surface.
 # Requires: Apple-silicon host + `tart` (brew install cirruslabs/cli/tart).
 set -euo pipefail
 
-VM="loopback-ios"
+VM="inspector-ios"
 BASE="ghcr.io/cirruslabs/macos-sequoia-xcode:latest"   # macOS + Xcode preinstalled
 
 if ! tart list | grep -q "$VM"; then

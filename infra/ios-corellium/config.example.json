@@ -1,6 +1,6 @@
 {
   "endpoint": "https://<your-corellium-domain>/api",
   "api_token": "${CORELLIUM_API_TOKEN}",
-  "project": "loopback",
+  "project": "inspector",
   "device": { "flavor": "iphone15", "os": "17.5" }
 }

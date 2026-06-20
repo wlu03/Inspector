@@ -12,7 +12,7 @@ struct ContentView: View {
             Button("Save") {
                 // Same bug as the other samples: Save should show a "Saved"
                 // confirmation but crashes first (index out of range), so the
-                // toast is never set. LoopBack catches the crash via the
+                // toast is never set. Inspector catches the crash via the
                 // simulator log / crash report and via verify-after-act.
                 NSLog("query not invalidated after save")
                 let items: [String] = []
