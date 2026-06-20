@@ -2,15 +2,15 @@
 
 ## The decision that shapes everything: where grounding lives
 
-LoopBack plugs into a frontier coding agent that is **already a strong vision-language model**. So LoopBack does **not** host its own grounding LLM. Instead:
+Inspector plugs into a frontier coding agent that is **already a strong vision-language model**. So Inspector does **not** host its own grounding LLM. Instead:
 
-> LoopBack runs cheap **element detection** (OmniParser-style YOLOv8 + Florence-2 captions) to produce a **Set-of-Mark** screenshot — numbered boxes over clickable elements — and returns that + the element list to the host agent. The **host agent picks element #N**; LoopBack maps #N → bbox center → click.
+> Inspector runs cheap **element detection** (OmniParser-style YOLOv8 + Florence-2 captions) to produce a **Set-of-Mark** screenshot — numbered boxes over clickable elements — and returns that + the element list to the host agent. The **host agent picks element #N**; Inspector maps #N → bbox center → click.
 
 Benefits: no GPU-hosted frontier model, grounding-by-ID is far more reliable than raw-coordinate guessing (which scores <2% on dense UIs), and it cleanly realizes "MCP = eyes+hands, host = brain."
 
 ## The multimodal abstraction: one `SurfaceAdapter` interface
 
-LoopBack is multimodal across **web, Electron, Android, and iOS** by design. The loop stays identical across surfaces because each surface is a concrete implementation of a single interface — the core never branches on surface type:
+Inspector is multimodal across **web, Electron, Android, and iOS** by design. The loop stays identical across surfaces because each surface is a concrete implementation of a single interface — the core never branches on surface type:
 
 ```
 SurfaceAdapter:
@@ -34,7 +34,7 @@ Adding a surface = writing one adapter. The MCP tools, session manager, percepti
                                  │  MCP (stdio / streamable HTTP)
                                  │  Tasks pattern: call-now / fetch-later
 ┌────────────────────────────────▼──────────────────────────────────┐
-│  CONTROL PLANE — LoopBack MCP server + Orchestrator                 │
+│  CONTROL PLANE — Inspector MCP server + Orchestrator                 │
 │  • MCP tool layer (launch / observe / act / verify / report / stop)│
 │  • Session manager (handles, state machine, task IDs)              │
 │  • Element detector service (OmniParser/YOLOv8 → Set-of-Mark)      │
@@ -57,7 +57,7 @@ Adding a surface = writing one adapter. The MCP tools, session manager, percepti
 
 ## Two planes
 
-- **Control plane** — the LoopBack MCP server + orchestrator. Distributed both as a local package (stdio) and a hosted service (streamable HTTP, for cloud agents). Owns all state and intelligence.
+- **Control plane** — the Inspector MCP server + orchestrator. Distributed both as a local package (stdio) and a hosted service (streamable HTTP, for cloud agents). Owns all state and intelligence.
 - **Execution plane(s)** — sandboxes where the app actually runs. Linux (E2B Desktop) covers web / Electron / Android. **iOS is a physically separate macOS plane** because the simulator cannot run on Linux (hard constraint). Both planes expose the same session interface; only the backend calls differ (`xdotool` vs `adb` vs `simctl`).
 
 ## Component map

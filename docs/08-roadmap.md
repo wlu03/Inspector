@@ -1,6 +1,6 @@
 # 08 — Build Plan
 
-LoopBack is **multimodal from day one**: a surface-agnostic core plus one `SurfaceAdapter` per surface. You build the core once; each of **web, Electron, Android, iOS** plugs in without touching it. This doc is the full development inventory.
+Inspector is **multimodal from day one**: a surface-agnostic core plus one `SurfaceAdapter` per surface. You build the core once; each of **web, Electron, Android, iOS** plugs in without touching it. This doc is the full development inventory.
 
 Effort scale: **S** = days · **M** = 1–2 wks · **L** = ~1 mo · **XL** = multi-month / research-hard.
 

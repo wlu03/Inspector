@@ -1,20 +1,20 @@
-# LoopBack
+# Inspector
 
 **An MCP server that lets a coding agent see, operate, and test the app it just built — across web, Electron, Android, and iOS — and feed structured, reproducible findings back so it can fix issues autonomously.**
 
-LoopBack plugs into Claude Code, Cursor, or any MCP-compatible coding agent. It spins up a sandbox, builds and launches the developer's app from its own dev command, and gives the agent **eyes and hands** on the live running build via **pure computer-use** (screenshot → ground → click → verify). The agent's existing assistant gains the ability to actually run and exercise the UI it writes — closing the loop between "wrote the code" and "knows it works." It is **multimodal by design**: the same loop runs on every surface.
+Inspector plugs into Claude Code, Cursor, or any MCP-compatible coding agent. It spins up a sandbox, builds and launches the developer's app from its own dev command, and gives the agent **eyes and hands** on the live running build via **pure computer-use** (screenshot → ground → click → verify). The agent's existing assistant gains the ability to actually run and exercise the UI it writes — closing the loop between "wrote the code" and "knows it works." It is **multimodal by design**: the same loop runs on every surface.
 
 ---
 
 ## The three load-bearing theses
 
 1. **Computer-use is the universal interaction layer.** Not Playwright (CDP/browser-bound, blind to native mobile). One pixel-level loop works on anything that opens on a screen.
-2. **The MCP is the eyes and hands; the host coding agent is the brain and the fixer.** LoopBack provides perception, action, detection, and the loop. The host agent decides and repairs.
+2. **The MCP is the eyes and hands; the host coding agent is the brain and the fixer.** Inspector provides perception, action, detection, and the loop. The host agent decides and repairs.
 3. **Acting is buildable; *judging* is hard.** Every deterministic signal (crash, console error, a11y violation, pixel diff) is buildable in weeks. Deciding "is this a real bug?" is research-hard — so we scope to reliable oracles and **never auto-merge**.
 
 ## Two architectural pillars
 
-**1. Grounding lives in the host.** Because LoopBack plugs into a frontier coding agent that *is already a strong vision-language model*, it does **not** host its own grounding LLM. It runs cheap element detection (OmniParser/YOLOv8) to produce a **Set-of-Mark** screenshot (numbered boxes over clickable elements), returns that to the host agent, and the host picks the element. LoopBack maps the choice to coordinates and clicks. Grounding-by-ID beats raw-coordinate guessing and keeps LoopBack lean (no GPU-hosted frontier model).
+**1. Grounding lives in the host.** Because Inspector plugs into a frontier coding agent that *is already a strong vision-language model*, it does **not** host its own grounding LLM. It runs cheap element detection (OmniParser/YOLOv8) to produce a **Set-of-Mark** screenshot (numbered boxes over clickable elements), returns that to the host agent, and the host picks the element. Inspector maps the choice to coordinates and clicks. Grounding-by-ID beats raw-coordinate guessing and keeps Inspector lean (no GPU-hosted frontier model).
 
 **2. Multimodal via one `SurfaceAdapter` interface.** Every surface — web, Electron, Android, iOS — is a concrete implementation of a single interface (`launch · is_ready · screenshot · input · logs · teardown`). The entire core (MCP tools, session manager, perception, action dispatcher, detection, trace, loop) is written **once** against that interface and never branches on surface type. Adding a surface = writing one adapter.
 

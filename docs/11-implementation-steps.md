@@ -9,13 +9,13 @@ Pinned baselines used below: FastMCP 2.x · `e2b-desktop` Python v2.x · MCP spe
 ## Part A — Project scaffold & data models
 
 1. `pyproject.toml` with deps: `fastmcp`, `e2b-desktop`, `pydantic`, `httpx`, `pillow`, `websocket-client` (CDP), `replicate` *or* local OmniParser (`torch`, `ultralytics`, `transformers`). Pin exact versions.
-2. `loopback/models.py` — pydantic models from [06 — Data Schema](06-data-schema.md): `Session`, `Element`, `Action`, `Finding`, `Run`. Add ID factories (`ses_`, `run_`, `fnd_`, `trc_`).
-3. `loopback/config.py` — env (`E2B_API_KEY`, OmniParser endpoint), surface registry, caps.
-4. Stub `~/.loopback/sessions/<id>/` writer (trace dirs) — wire in Part F.
+2. `inspector/models.py` — pydantic models from [06 — Data Schema](06-data-schema.md): `Session`, `Element`, `Action`, `Finding`, `Run`. Add ID factories (`ses_`, `run_`, `fnd_`, `trc_`).
+3. `inspector/config.py` — env (`E2B_API_KEY`, OmniParser endpoint), surface registry, caps.
+4. Stub `~/.inspector/sessions/<id>/` writer (trace dirs) — wire in Part F.
 
 ## Part B — Shared core: MCP server skeleton
 
-1. `loopback/server.py`: `mcp = FastMCP("LoopBack")`. Keep `stateless_http=False`.
+1. `inspector/server.py`: `mcp = FastMCP("Inspector")`. Keep `stateless_http=False`.
 2. **State**: hold the live sandbox/session in a `lifespan` async context manager (one shared sandbox) **or** a module-global dict keyed by `session_id` (for multiple). Stdio = one long-lived process, so globals persist.
    ```python
    @asynccontextmanager
@@ -29,12 +29,12 @@ Pinned baselines used below: FastMCP 2.x · `e2b-desktop` Python v2.x · MCP spe
 4. **Image returns**: `from fastmcp.utilities.types import Image` → return `Image(data=bytes(png), format="png")`. Mix with text by returning a `list`. Structured data → return a `dict`/model (auto `structuredContent`) or `ToolResult(content=[...], structured_content={...})`.
 5. `mcp.run()` (stdio default). **Log to stderr only** — any stdout `print()` corrupts JSON-RPC.
 6. Register in clients:
-   - Claude Code: `claude mcp add --transport stdio --scope project loopback --env E2B_API_KEY=xxx -- python /abs/loopback/server.py` (note the `--` separator).
-   - `.mcp.json` / Cursor `~/.cursor/mcp.json`: `{"mcpServers":{"loopback":{"command":"python","args":["server.py"],"env":{"E2B_API_KEY":"${E2B_API_KEY}"},"timeout":600000}}}`. Set a **high `timeout`** (ms) — loops are slow.
+   - Claude Code: `claude mcp add --transport stdio --scope project inspector --env E2B_API_KEY=xxx -- python /abs/inspector/server.py` (note the `--` separator).
+   - `.mcp.json` / Cursor `~/.cursor/mcp.json`: `{"mcpServers":{"inspector":{"command":"python","args":["server.py"],"env":{"E2B_API_KEY":"${E2B_API_KEY}"},"timeout":600000}}}`. Set a **high `timeout`** (ms) — loops are slow.
 
 ## Part C — Shared core: sandbox + computer-use tools
 
-1. `loopback/sandbox.py` wraps `e2b_desktop.Sandbox`:
+1. `inspector/sandbox.py` wraps `e2b_desktop.Sandbox`:
    - Create: `Sandbox.create(resolution=(1280,800), timeout=3600)` (timeout in **seconds**).
    - Start stream (for the dashboard/VNC): `desktop.stream.start()`; `desktop.stream.get_url()`.
    - **Keep-alive**: call `desktop.set_timeout(600)` periodically during long runs or the sandbox dies mid-task.
@@ -51,7 +51,7 @@ Pinned baselines used below: FastMCP 2.x · `e2b-desktop` Python v2.x · MCP spe
 
 ## Part D — Shared core: perception (OmniParser → Set-of-Mark)
 
-1. `loopback/perception/detector.py`. Choose run mode:
+1. `inspector/perception/detector.py`. Choose run mode:
    - **Self-host** (recommended for loop latency): run OmniParser's FastAPI server (`omnitool/omniparserserver`) on a GPU box; POST screenshots. ~0.6–0.8 s/frame on A100/4090.
    - **Replicate** (no infra): `replicate.run("microsoft/omniparser-v2", input={"image":..., "imgsz":640, "box_threshold":0.05, "iou_threshold":0.1, "use_paddleocr":True})`. ~$0.0064/run, ~29 s incl. cold start. **[VERIFY]** output key names.
 2. Local API path (if self-hosting): `get_yolo_model`, `get_caption_model_processor`, `check_ocr_box`, then `get_som_labeled_img(..., BOX_TRESHOLD=0.05, output_coord_in_ratio=True, ...)` — note `BOX_TRESHOLD` is **literally misspelled**.
@@ -71,14 +71,14 @@ Pinned baselines used below: FastMCP 2.x · `e2b-desktop` Python v2.x · MCP spe
 
 1. `detection.py` — **deterministic first**: parse the log tap (stdout/stderr/logcat/idevicesyslog) for crash/exception/error markers; classify. (Web/Electron: also CDP console/network — Part G2.) Add axe-core (Part G3), pixel-diff + layout geometry later.
 2. `findings.py` — synthesize constrained-JSON `Finding` (see [05](05-detection-and-feedback.md)) with `confidence` (deterministic=high, visual=lower).
-3. `trace.py` — write `~/.loopback/sessions/<id>/`: `actions.jsonl` (append-only), `frames/frame_NNNN.png`, `logs.jsonl`, `findings/*.json`, `session.json`, `run.json`. **The action log is also the deterministic re-run script** for fix verification.
+3. `trace.py` — write `~/.inspector/sessions/<id>/`: `actions.jsonl` (append-only), `frames/frame_NNNN.png`, `logs.jsonl`, `findings/*.json`, `session.json`, `run.json`. **The action log is also the deterministic re-run script** for fix verification.
 4. `loop.py` guardrails: iteration/cost/wall-clock caps; **no-progress detection** = hash `(action, post-screenshot, logs)`, repeated identical → escalate; **confidence gate** = K-sample the host judgment for visual findings; terminal = **open PR/draft, never auto-merge**.
 
 ## Part G — Web adapter
 
 1. **Detect** (`launch/detect.py`): package manager from lockfile (`bun.lockb→bun`, `pnpm-lock.yaml→pnpm`, `yarn.lock→yarn`, `package-lock.json→npm`; honor `packageManager` field). Framework via ordered matcher (Expo→Next→SvelteKit→Astro→Vite→CRA): strongest dep signal + config file. **Prefer `scripts.dev`/`scripts.start`** over inferring the binary; framework table is the fallback + the port hint.
 2. **Readiness** (`launch/readiness.py`): `detect-port` → pick free port → launch with `--port realPort --host 0.0.0.0`. Then race (a) `wait-on` `http-get://127.0.0.1:PORT/` (use **http-get**, accept 3xx via `validateStatus`, 60–90s timeout) and (b) log-pattern (`ready in \d+ ms`, `➜ Local: (https?://\S+)`) — capture the URL from the match; abort early on `EADDRINUSE`/`Error:`/process exit. Ready = HTTP probe passes.
-3. **Browser launch**: `google-chrome --app=URL --window-position=0,0 --window-size=1280,800 --no-first-run --disable-session-crashed-bubble --remote-debugging-port=9222 --user-data-dir=/tmp/loopback-profile` (background). Prefer **`--app`** over `--kiosk` (kiosk overrides window-size). Fallback geometry: `wmctrl -r :ACTIVE: -e 0,0,0,1280,800`.
+3. **Browser launch**: `google-chrome --app=URL --window-position=0,0 --window-size=1280,800 --no-first-run --disable-session-crashed-bubble --remote-debugging-port=9222 --user-data-dir=/tmp/inspector-profile` (background). Prefer **`--app`** over `--kiosk` (kiosk overrides window-size). Fallback geometry: `wmctrl -r :ACTIVE: -e 0,0,0,1280,800`.
 4. **Console/network capture (no Playwright)**: CDP over raw WebSocket — GET `http://localhost:9222/json` for `webSocketDebuggerUrl`; send `Runtime.enable` (→ `consoleAPICalled`/`exceptionThrown`), `Log.enable`, `Network.enable` (→ `loadingFailed`); read events on a thread. Fallback: inject `console`/`onerror` overrides via `Runtime.evaluate`.
 5. **(optional)** axe-core: inject CDN bundle via `Page.addScriptToEvaluateOnNewDocument`, `axe.run(document).then(r=>r.violations)`. rrweb: inject recorder, drain `window.__rrwebEvents`.
 

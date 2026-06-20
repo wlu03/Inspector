@@ -8,7 +8,7 @@
 
 ## When it becomes essential
 
-> The dashboard becomes essential the moment LoopBack moves from **synchronous inner-loop** (developer watching the chat) to **autonomous / async / CI runs** (no human watching). Then there's no chat transcript to read — the dashboard is the primary interface and the safety valve that makes "no human blockage" acceptable, because a human can review after the fact.
+> The dashboard becomes essential the moment Inspector moves from **synchronous inner-loop** (developer watching the chat) to **autonomous / async / CI runs** (no human watching). Then there's no chat transcript to read — the dashboard is the primary interface and the safety valve that makes "no human blockage" acceptable, because a human can review after the fact.
 
 In the pure IDE inner-loop, the host agent's chat *is* the UI and a dashboard is optional. So: **build it after the loop produces trustworthy data, and lead with it when the product moves toward CI/autonomous runs.**
 
@@ -26,7 +26,7 @@ In the pure IDE inner-loop, the host agent's chat *is* the UI and a dashboard is
 
 - Pure frontend over the on-disk/remote trace format from [06](06-data-schema.md). No new capture.
 - Replay = a scrubber over `actions.jsonl` that swaps the matching `frames/frame_NNNN.png` and highlights log lines by timestamp. For web, optionally layer rrweb for true DOM visual replay (but rrweb reconstructs, it doesn't re-execute).
-- Hosted service reads from object storage; local mode reads from `~/.loopback/sessions/`.
+- Hosted service reads from object storage; local mode reads from `~/.inspector/sessions/`.
 
 ## Sequencing
 

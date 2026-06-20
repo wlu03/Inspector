@@ -59,6 +59,6 @@ The **Session** is the long-lived object. It owns: the sandbox handle, the runni
 
 ## Permissions & safety
 
-- LoopBack runs untrusted user code (the dev build) — always inside the sandbox, never on the host.
-- The host agent's edits happen in its own workspace; LoopBack only *observes and operates* the running app.
+- Inspector runs untrusted user code (the dev build) — always inside the sandbox, never on the host.
+- The host agent's edits happen in its own workspace; Inspector only *observes and operates* the running app.
 - Terminal output of an autonomous run is a **findings report + PR/draft — never an auto-merge** (see [05](05-detection-and-feedback.md)).

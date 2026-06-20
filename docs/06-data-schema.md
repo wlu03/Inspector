@@ -81,7 +81,7 @@ Run {
 ## On-disk trace layout
 
 ```
-~/.loopback/sessions/<session_id>/
+~/.inspector/sessions/<session_id>/
   session.json            # the Session object
   run.json                # the Run summary
   findings/

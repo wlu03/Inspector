@@ -4,7 +4,7 @@
 
 Agentic coding exploded. The agent can *write* a UI but can't *see* whether it works. The feedback loop between "generated the code" and "confirmed it runs correctly" is still manual — a human launches the app, clicks around, and reports back. Existing automation (Playwright, Cypress) is browser-bound and can't reach native desktop or mobile, and it requires writing/maintaining test scripts rather than just *operating the live build*.
 
-## What LoopBack is
+## What Inspector is
 
 An MCP server that gives any MCP-compatible coding agent the ability to:
 1. Launch the developer's app in a sandbox from its own dev command (`npm run dev`, `expo start`, `electron .`).
@@ -24,7 +24,7 @@ Developers using agentic coding tools (Claude Code, Cursor, etc.). The buyer/cha
 
 ## Competitive landscape
 
-| Category | Players | Relationship to LoopBack |
+| Category | Players | Relationship to Inspector |
 |---|---|---|
 | Agent sandbox + computer-use | **E2B Desktop**, EdgeBox, agent-sandbox | Generic blank desktop. We build on it; they don't know about *your project* or do detection/feedback. **Build-on or compete.** |
 | Universal OS eyes+hands | **ScreenPipe** ("Playwright-like interface for the entire OS") | Closest to our pure-computer-use interaction layer. **Potential foundation or competitor — evaluate first.** |
@@ -35,7 +35,7 @@ Developers using agentic coding tools (Claude Code, Cursor, etc.). The buyer/cha
 ## Moat analysis (honest)
 
 - **The technology is assemblable from commodity parts** (sandbox = E2B, detection = OmniParser, action loop = standard CUA primitives, distribution = MCP). That makes v0 fast — and the moat thin.
-- **Platform risk is the real threat.** The most reliable slice (web verification) is exactly where Microsoft and the coding-agent vendors are already moving. If LoopBack is "browser verification," it gets absorbed as a feature.
+- **Platform risk is the real threat.** The most reliable slice (web verification) is exactly where Microsoft and the coding-agent vendors are already moving. If Inspector is "browser verification," it gets absorbed as a feature.
 - **Defensible ground = the surfaces + the orchestration nobody integrates well:** auto-detecting/building/launching arbitrary dev builds, doing it across Electron/Android/iOS, and making the feedback genuinely actionable. Plus the dashboard/observability layer as the sticky, paid surface.
 
 ## Strategic recommendation
