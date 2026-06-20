@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "loopback": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "loopback.server"],
+      "env": {
+        "E2B_API_KEY": "${E2B_API_KEY}",
+        "REPLICATE_API_TOKEN": "${REPLICATE_API_TOKEN}"
+      },
+      "timeout": 600000
+    }
+  }
+}

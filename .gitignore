@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.loopback/
+node_modules/
+scripts/_*.png
+replays/
+.mcp.json
+# iOS / Xcode (generated)
+*.xcodeproj
+DerivedData/
+# Redroid volume
+infra/android-redroid/data/

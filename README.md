@@ -35,13 +35,62 @@ Inspector plugs into Claude Code, Cursor, or any MCP-compatible coding agent. It
 | [09 — Risks & Open Questions](docs/09-risks-and-open-questions.md) | Risk register, hard constraints, decisions still open |
 | [10 — Research Notes](docs/10-research-notes.md) | Sourced findings, benchmarks, tool inventory |
 | [11 — Implementation Steps](docs/11-implementation-steps.md) | **Build-ready:** every part as ordered, concrete steps with exact APIs/commands |
+| [12 — Accounts & Services](docs/12-accounts-and-services.md) | Every platform to sign up for, by phase (v0 needs only E2B + Replicate) |
 
 ## Status
 
-**Planning.** No code yet. Two strategic decisions still open (see [01](docs/01-vision-and-strategy.md) and [09](docs/09-risks-and-open-questions.md)):
-- **Tool vs. company** — personal dev tool, or venture bet? Changes the whole posture.
-- **Runtime bring-up order** — all four surfaces are in scope (the product is multimodal); the question is which *runtime* to stand up first (recommend web → Electron → Android → iOS by infra readiness), and which surfaces to emphasize in positioning (recommend native/mobile).
+**Planning.** No code yet.
+
+**Scope (decided):** build **all four surfaces** (Web, Electron, Android, iOS) as a **personal/dev tool** — not productionizing yet (no hosting, payments, or hosted dashboard). Signups + build checklist for this scope: [12 — Accounts & Services](docs/12-accounts-and-services.md). Bring runtimes online web → Electron → Android → iOS (infra-readiness order; all four in scope).
+
+Still open: whether this later becomes a product (the productization tier in [08](docs/08-roadmap.md) / [12](docs/12-accounts-and-services.md) is deferred, not cut), and whether to build on vs. compete with ScreenPipe/E2B/Swarm (see [01](docs/01-vision-and-strategy.md), [09](docs/09-risks-and-open-questions.md)).
 
 ## TL;DR build plan
 
 Multimodal from day one: build the **surface-agnostic core + the `SurfaceAdapter` interface**, then the four adapters — **web, Electron, Android, iOS** — plug in without touching the core. Bring runtimes online in order of infra readiness (web/Electron share the Linux plane; Android adds Redroid; iOS needs a separate macOS plane). See [08 — Build Plan](docs/08-roadmap.md).
+
+## Code (scaffold)
+
+The Python package scaffold lives in [`loopback/`](loopback/):
+
+```
+loopback/
+  server.py        # FastMCP server: launch_app / observe / act / verify / get_findings / stop
+  session.py       # Session + SessionManager — the loop (observe → act → verify-after-act)
+  sandbox.py       # E2B Desktop wrapper (lazy-imported)
+  models.py        # Session / Element / Action / Finding / Run (pydantic)
+  config.py
+  adapters/        # SurfaceAdapter interface + web · electron · android · ios
+  perception/      # OmniParser detector + Set-of-Mark renderer
+  launch/          # framework detection + readiness
+  detection.py  findings.py  trace.py  loop.py
+```
+
+**Status:** core + **Web** adapter wired; **Electron** partial (launch done, window-detection TODO); **Android/iOS** are interface skeletons (M2/M3). Heavy SDKs (fastmcp/e2b/replicate) are lazy-imported, so the package + pure tests run with only `pydantic` + `pillow`. Verified: all sources compile, 8 pure unit tests pass, core import graph loads without the cloud SDKs.
+
+Quickstart:
+
+```bash
+pip install -e ".[all]"     # or ".[dev]" for tests only
+cp .env.example .env        # add E2B_API_KEY + REPLICATE_API_TOKEN
+pytest -q                   # pure unit tests (no cloud SDKs needed)
+python -m loopback.server   # run the MCP server (stdio) — or wire via .mcp.json.example
+```
+
+Per-part build detail (exact APIs/commands) is in [11 — Implementation Steps](docs/11-implementation-steps.md).
+
+### Repo layout
+
+```
+loopback/            # the package (core + adapters + perception + planes)
+  planes/            # execution planes: LinuxPlane (E2B), MacOSPlane (tart, iOS), Redroid
+infra/               # how each VM is provisioned (linux-e2b, android-redroid, macos-tart, ios-corellium)
+examples/            # one buggy sample app per surface (web, electron, android, ios)
+docs/                # 01–12 design docs
+scripts/             # run_m0 / run_m0_mcp / run_app / doctor / probes
+DELIVERABLES.md      # the full build checklist  ·  TESTING.md  # how to validate with a real agent
+```
+
+- **[DELIVERABLES.md](DELIVERABLES.md)** — the complete what's-needed checklist (multimodal).
+- **[TESTING.md](TESTING.md)** — how to run tasks #6/#7 (validate with a real Claude Code agent).
+- **[infra/](infra/)** — the two VM planes (Linux for web/Electron/Android, macOS for iOS).

@@ -1,0 +1,12 @@
+{
+  "name": "sample-buggy-electron",
+  "private": true,
+  "version": "0.0.0",
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

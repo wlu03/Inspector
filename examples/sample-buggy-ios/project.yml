@@ -1,0 +1,22 @@
+# xcodegen spec — run `xcodegen generate` to produce SampleBuggyApp.xcodeproj.
+name: SampleBuggyApp
+options:
+  bundleIdPrefix: com.loopback
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  SampleBuggyApp:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Sample Buggy App
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: NO
+        PRODUCT_BUNDLE_IDENTIFIER: com.loopback.SampleBuggyApp
