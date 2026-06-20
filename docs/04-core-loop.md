@@ -37,9 +37,9 @@ Standard computer-use action set, dispatched to the right backend per surface:
 
 E2B Desktop's SDK already exposes `screenshot()`, `left_click/double_click/right_click`, `move_mouse(x,y)`, `drag`, `scroll`, `write(text)`, `press(key)` — so the Linux input/capture layer is orchestration, not new code.
 
-## Launch adapters (the core IP)
+## Surface adapters (the core IP)
 
-Per-surface adapters that detect, boot, and confirm readiness.
+Each surface — **web, Electron, Android, iOS** — is a `SurfaceAdapter` implementing one interface (`launch · is_ready · screenshot · input · logs · teardown`), so the core loop is identical across all four. Adapters detect the project, boot it in the right runtime, confirm readiness, then expose capture/input/logs. The per-surface backends are tabulated above (under Action space); the detection + readiness specifics follow.
 
 ### Framework / command detection
 - Parse `package.json` scripts, lockfiles, config files (`vite.config`, `next.config`, Expo `app.json`, `electron` in deps).

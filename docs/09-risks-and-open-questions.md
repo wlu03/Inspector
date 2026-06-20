@@ -24,7 +24,7 @@
 ## Open questions / decisions to make
 
 - [ ] **Tool or company?** Personal/learning tool = clear yes. Venture = needs a real answer to platform risk. *Decide before scaling effort.*
-- [ ] **First surface?** Recommendation: lead with a differentiated surface (Electron/native or mobile), web as table stakes. *Confirm.*
+- [ ] **Runtime bring-up order?** All four surfaces are in scope — the product is multimodal. The open question is which *runtime* to stand up first: web/Electron are cheapest (shared Linux plane), then Android (Redroid), then iOS (separate macOS plane). Recommend proving the core on web, then bringing the rest online by infra readiness. Separately, for *market positioning*, emphasize the native/mobile surfaces. *Confirm.*
 - [ ] **Build on ScreenPipe / E2B, or around them?** Evaluate both before writing much code — ScreenPipe may be the interaction foundation or a competitor.
 - [ ] **Detection scope for v0** — strictly directed verification + deterministic oracles? (Recommended yes.)
 - [ ] **Grounding model** — OmniParser SoM only, or include UI-TARS from the start?

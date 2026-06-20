@@ -8,6 +8,22 @@ LoopBack plugs into a frontier coding agent that is **already a strong vision-la
 
 Benefits: no GPU-hosted frontier model, grounding-by-ID is far more reliable than raw-coordinate guessing (which scores <2% on dense UIs), and it cleanly realizes "MCP = eyes+hands, host = brain."
 
+## The multimodal abstraction: one `SurfaceAdapter` interface
+
+LoopBack is multimodal across **web, Electron, Android, and iOS** by design. The loop stays identical across surfaces because each surface is a concrete implementation of a single interface — the core never branches on surface type:
+
+```
+SurfaceAdapter:
+   launch(repo)        # boot the app in its runtime
+   is_ready() -> bool  # interactive yet?
+   screenshot() -> png
+   input(action)       # click / type / tap / swipe
+   logs() -> stream    # crash / error signal
+   teardown()
+```
+
+Adding a surface = writing one adapter. The MCP tools, session manager, perception (detector→SoM), action dispatcher, detection engine, trace recorder, and loop controller are all written **once** against this interface. See [04 — Core Loop](04-core-loop.md) for each adapter's backend and [08 — Build Plan](08-roadmap.md) for the full inventory.
+
 ## System topology
 
 ```
@@ -50,7 +66,7 @@ Benefits: no GPU-hosted frontier model, grounding-by-ID is far more reliable tha
 |---|---|---|---|
 | MCP tool layer | Expose tools to host agent | Build on SDK | [03](03-mcp-contract.md) |
 | Session manager | Lifecycle, state machine, Tasks | Build | [03](03-mcp-contract.md) |
-| Launch adapters | Detect framework + dev cmd, boot, readiness | Build (core IP) | [04](04-core-loop.md) |
+| Surface adapters ×4 (web/Electron/Android/iOS) | Implement `launch/is_ready/screenshot/input/logs` per surface | Build (core IP) | [04](04-core-loop.md) |
 | Sandbox substrate | Virtual desktop + input/capture | **Buy** (E2B Desktop) | [02](#two-planes) |
 | Element detector | Screenshot → Set-of-Mark | Buy/host (OmniParser) | [04](04-core-loop.md) |
 | Action dispatcher | element-ID/coords → input event per surface | Build | [04](04-core-loop.md) |
