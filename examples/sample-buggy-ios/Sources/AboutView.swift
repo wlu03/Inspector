@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Screen 3 — About. Static info plus the "Reset all" navigation defect (BUG-05).
+/// Screen 3 — About. Static info plus a "Reset all" button that clears state and pops to root.
 struct AboutView: View {
     @EnvironmentObject var app: AppState
     @Binding var path: [Route]
@@ -24,9 +24,11 @@ struct AboutView: View {
     }
 
     private func resetAll() {
-        // BUG-05: should clear all state and return to Settings (the root).
-        // Instead it clears nothing and pushes the wrong screen (Profile).
-        NSLog("reset no-op, wrong route")
-        path.append(.profile)
+        app.settingsName = ""
+        app.notificationsEnabled = false
+        app.theme = .system
+        app.profileDisplayName = ""
+        app.profileEmail = ""
+        path = []
     }
 }
