@@ -62,20 +62,31 @@ def tap(x: float, y: float) -> None:
     time.sleep(0.5)
 
 
+def _scroll_down() -> None:
+    # swipe finger up → content scrolls up, revealing lower rows (the taller Wishlist
+    # home pushes the nav links below the fold; a11y only describes visible nodes).
+    sh(f"{IDB} ui swipe --udid {UD} 200 600 200 250")
+    time.sleep(0.5)
+
+
 def tap_label(label: str) -> bool:
-    n = find(lambda n: n.get("AXLabel") == label and n.get("type") == "Button")
-    if n:
-        tap(*center(n))
-        return True
+    for _ in range(4):
+        n = find(lambda n: n.get("AXLabel") == label and n.get("type") == "Button")
+        if n:
+            tap(*center(n))
+            return True
+        _scroll_down()
     return False
 
 
 def tap_field(placeholder: str) -> bool:
     # an empty SwiftUI TextField carries its placeholder in AXValue
-    n = find(lambda n: n.get("type") == "TextField" and n.get("AXValue") == placeholder)
-    if n:
-        tap(*center(n))
-        return True
+    for _ in range(4):
+        n = find(lambda n: n.get("type") == "TextField" and n.get("AXValue") == placeholder)
+        if n:
+            tap(*center(n))
+            return True
+        _scroll_down()
     return False
 
 
@@ -96,7 +107,8 @@ def back() -> None:
 
 
 def nav_title() -> str | None:
-    n = find(lambda n: n.get("type") == "Heading" and n.get("AXLabel") in ("Settings", "Profile", "About"))
+    n = find(lambda n: n.get("type") == "Heading"
+             and n.get("AXLabel") in ("My Wishlist", "Wish Details", "About"))
     return n.get("AXLabel") if n else None
 
 
@@ -109,17 +121,17 @@ def reset() -> None:
 
 def bug02_int_normalize():
     reset()
-    tap_field("Your name"); typ("007")
-    tap_label("Save"); time.sleep(0.6)
+    tap_field("Item name"); typ("007")
+    tap_label("Add"); time.sleep(0.6)
     fld = find(lambda n: n.get("type") == "TextField")
-    saved = find(lambda n: n.get("AXLabel") == "Saved")
+    saved = find(lambda n: n.get("AXLabel") == "Added")
     val = fld.get("AXValue") if fld else None
-    return ("BUG-02", val == "7" and bool(saved), f"field={val!r}, saved={bool(saved)} (PRESENT: '7' + Saved)")
+    return ("BUG-02", val == "7" and bool(saved), f"field={val!r}, added={bool(saved)} (PRESENT: '7' + Added)")
 
 
 def bug03_counter():
     reset()
-    tap_field("Your name"); typ("Alice")
+    tap_field("Item name"); typ("Alice")
     cnt = find(lambda n: (n.get("AXLabel") or "").endswith("/30"))
     lbl = cnt.get("AXLabel") if cnt else None
     return ("BUG-03", lbl == "4/30", f"counter={lbl!r} for 5 chars (PRESENT: '4/30')")
@@ -140,31 +152,31 @@ def bug06_theme():
 
 def bug04_completeness():
     reset()
-    tap_label("Profile"); time.sleep(1.0)
-    tap_field("Display name"); typ("Bob")
-    tap_field("Email"); typ("bob@x.com")
-    comp = find(lambda n: (n.get("AXLabel") or "").startswith("Profile completeness"))
+    tap_label("Wish Details"); time.sleep(1.0)
+    tap_field("Item name"); typ("Bob")
+    tap_field("Price"); typ("$50")
+    comp = find(lambda n: (n.get("AXLabel") or "").startswith("Wishlist"))
     lbl = comp.get("AXLabel") if comp else None
     return ("BUG-04", "66%" in (lbl or ""), f"{lbl!r} for 2 of 3 (PRESENT: 66%)")
 
 
 def bug01_05_nav():
     reset()
-    tap_label("Profile"); time.sleep(1.0)
-    tap_field("Display name"); typ("Wesley")
-    tap_field("Email"); typ("w@x.com")
+    tap_label("Wish Details"); time.sleep(1.0)
+    tap_field("Item name"); typ("Wesley")
+    tap_field("Price"); typ("$10")
     tap_label("Continue"); time.sleep(1.0)      # navigates to About via buggy 3-deep stack
-    back()                                       # -> duplicate Profile
+    back()                                       # -> duplicate Wish Details
     saved = find(lambda n: n.get("AXLabel") == "Wesley")
-    dn = find(lambda n: n.get("type") == "TextField")  # first field = Display name
+    dn = find(lambda n: n.get("type") == "TextField")  # first field = Item name
     dn_val = dn.get("AXValue") if dn else None
-    bug01 = bool(saved) and dn_val in ("Display name", "", None)
-    back()                                       # -> still Profile (one too deep)
+    bug01 = bool(saved) and dn_val in ("Item name", "", None)
+    back()                                       # -> still Wish Details (one too deep)
     title = nav_title()
-    bug05 = title == "Profile"
+    bug05 = title == "Wish Details"
     return [
         ("BUG-01", bug01, f"savedName='Wesley':{bool(saved)}, field={dn_val!r} (PRESENT: saved set + field empty)"),
-        ("BUG-05", bug05, f"title after 2 Backs={title!r} (PRESENT: still 'Profile')"),
+        ("BUG-05", bug05, f"title after 2 Backs={title!r} (PRESENT: still 'Wish Details')"),
     ]
 
 
