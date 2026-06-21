@@ -13,6 +13,9 @@ verify its own fix. That requires running Inspector over HTTP (it's stdio by def
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
 import urllib.request
 
 from .dashboard.aggregate import (
@@ -23,14 +26,46 @@ from .dashboard.aggregate import (
 )
 
 
+def github_repo(repo_path: str | None = None) -> str | None:
+    """The GitHub 'owner/name' from the repo's git remote — Devin clones from GitHub,
+    not the local path, so the prompt must name it. Returns None if no GitHub remote."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo_path or ".", "remote", "-v"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    for line in (r.stdout or "").splitlines():
+        m = re.search(r"github\.com[:/]([\w.\-]+/[\w.\-]+?)(?:\.git)?(?:\s|$)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
 def build_fix_prompt(finding: dict, repo_path: str, surface: str = "") -> str:
     """Devin task prompt for one finding — fix the root cause and open a PR."""
     base = fix_prompt(finding, {"repo_path": repo_path, "surface": surface})
+    repo = github_repo(repo_path)
+    where = (f"In the GitHub repository **{repo}**" if repo
+             else "In the repository above")
+    rel = ""
+    if repo and repo_path and os.path.isdir(repo_path):
+        try:
+            root = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            if root:
+                rel = os.path.relpath(repo_path, root)
+        except Exception:
+            rel = ""
+    sub = f" (the affected app is under `{rel}/`)" if rel and rel != "." else ""
     return (
         base
-        + "\n\nWork in the repository above. Implement a minimal, focused fix for the root "
-          "cause, run the project's build/tests, and OPEN A PULL REQUEST with the change. "
-          "Do not refactor unrelated code."
+        + f"\n\n{where}{sub}: implement a minimal, focused fix for the root cause, run the "
+          "project's build/tests, and OPEN A PULL REQUEST with the change. Do not refactor "
+          "unrelated code or modify example/test fixtures beyond the fix."
     )
 
 
