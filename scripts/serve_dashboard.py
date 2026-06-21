@@ -33,9 +33,10 @@ serve.set_action_handler(mcp._dashboard_action)   # powers Fix with Devin (opens
 serve.set_live_provider(mcp._live_sessions)        # powers the live feed
 base = serve.ensure_server(cfg.trace_root)
 
-print(f"\n  Dashboard:  {base}/dashboard.html")
-print("  Open replays from there — each finding's 'Fix with Devin' opens a PR for THAT issue.")
-print("  (Ctrl-C to stop)\n")
+print(f"\n  Dashboard:  {base}/dashboard.html", flush=True)
+print("  Open replays from there — each finding's 'Fix with Devin' opens a PR for THAT issue.",
+      flush=True)
+print("  (Ctrl-C to stop)\n", flush=True)
 try:
     while True:
         time.sleep(60)
