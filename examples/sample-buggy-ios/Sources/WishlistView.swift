@@ -54,6 +54,7 @@ struct WishlistView: View {
                 Button(action: add) {
                     Label("Add", systemImage: "plus.circle.fill")
                 }
+                .disabled(app.newItemName.trimmingCharacters(in: .whitespaces).isEmpty)
                 .accessibilityIdentifier("settings.save.button")
 
                 Text(addedConfirmation)
@@ -99,6 +100,9 @@ struct WishlistView: View {
     }
 
     private func add() {
+        let trimmed = app.newItemName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+
         // BUG-02: "normalize" the name as if it were a numeric id — drops leading zeros.
         // The field is bound to $app.newItemName, so the mutated value re-renders
         // straight back into the field while "Added" still claims success.
