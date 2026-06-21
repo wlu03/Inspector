@@ -13,6 +13,10 @@ const store = {
     { id: 1, name: "Pro Plan (seat)", price: 12.0, qty: 2 },
     { id: 2, name: "Extra storage 50GB", price: 4.5, qty: 1 },
   ],
+  team: [
+    { name: "Wesley Lu", email: "wesley@acme.co" },
+    { name: "Dana Kim", email: "dana@acme.co" },
+  ],
 };
 
 // theme is INTENTIONALLY view-local, not in the store → see BUG-04
@@ -277,9 +281,67 @@ function about() {
   $("#check").addEventListener("click", () => toast("You're up to date"));
 }
 
+function reports() {
+  const done = store.tasks.filter((t) => t.done).length;
+  // BUG-11: completion rate divides done by done (always 100%) instead of done/total.
+  const rate = done ? Math.round((done / done) * 100) : 0; // should be done/store.tasks.length
+  const revenue = store.cart.reduce((s, i) => s + i.price * i.qty, 0);
+  view.innerHTML = `
+    <h1>Reports</h1>
+    <p class="sub">Workspace analytics.</p>
+    <div class="stat-grid">
+      <div class="stat"><div class="n">${rate}%</div><div class="l">Task completion</div></div>
+      <div class="stat"><div class="n">$${revenue.toFixed(2)}</div><div class="l">Cart value</div></div>
+      <div class="stat"><div class="n">${store.team.length}</div><div class="l">Team members</div></div>
+    </div>
+    <div class="card" style="margin-top:18px"><h2>Notes</h2>
+      <p class="muted">Task completion should be completed ÷ total tasks.</p></div>`;
+}
+
+function team() {
+  const render = () => {
+    const rows = store.team
+      .map(
+        (m, idx) => `<li>
+          <span class="grow">${m.name || "(no name)"} <span class="muted">${m.email || "—"}</span></span>
+          <button class="ghost sm" data-rm="${idx}">Remove</button>
+        </li>`
+      )
+      .join("");
+    view.innerHTML = `
+      <h1>Team <span class="badge">${store.team.length}</span></h1>
+      <p class="sub">Manage who has access.</p>
+      <div class="card">
+        <div class="row">
+          <input id="invite" placeholder="teammate@example.com" />
+          <button id="add-member">Invite</button>
+        </div>
+        <ul class="list">${rows}</ul>
+      </div>`;
+
+    // BUG-12: invite accepts an empty/invalid email and adds a blank member anyway.
+    $("#add-member").addEventListener("click", () => {
+      store.team.push({ name: "New member", email: $("#invite").value });
+      toast("Invite sent");
+      render();
+      refreshNav();
+    });
+
+    // BUG-13: Remove always drops the FIRST member, ignoring which row was clicked.
+    view.querySelectorAll("[data-rm]").forEach((b) =>
+      b.addEventListener("click", () => {
+        store.team.shift(); // should splice the clicked index
+        render();
+        refreshNav();
+      })
+    );
+  };
+  render();
+}
+
 // ---------- router ----------
 
-const routes = { dashboard, settings, profile, tasks, cart, billing, about };
+const routes = { dashboard, settings, profile, tasks, cart, billing, reports, team, about };
 
 function refreshNav() {
   const route = location.hash.replace("#/", "") || "dashboard";

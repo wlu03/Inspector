@@ -34,6 +34,9 @@ INSPECTOR_WEB_DIST=examples/sample-buggy-app \
 | BUG-08 | Settings | state-desync | Notifications toggle flips visually but never updates state. |
 | BUG-09 | About | missing-element | The "Export data" button is specified but never rendered. |
 | BUG-10 | Billing | dead-control | "Cancel subscription" has no handler — clicking does nothing. |
+| BUG-11 | Reports | arithmetic | Task completion always shows 100% (divides done by done). |
+| BUG-12 | Team | validation-bypass | Invite accepts an empty email and adds a blank member. |
+| BUG-13 | Team | wrong-target | Remove deletes the first member, not the one clicked. |
 
 These span every oracle Inspector ships: deterministic log/crash tap (BUG-01), verify-
 after-act / dead-control (BUG-01, BUG-10), input-integrity (BUG-02), code-aware

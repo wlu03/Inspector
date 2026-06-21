@@ -109,4 +109,10 @@ def planned_verify(config, repo_path: str, surface=None, goal: str = "find bugs"
     parts = plan_parts(config, repo_path, surface, goal)[:max_agents]
     result = parallel_verify(config, repo_path, parts, surface, max_steps, max_workers=max_agents)
     result["plan"] = parts
+    try:
+        from .parallel_report import write_parallel_report
+        result["parallel_report"] = write_parallel_report(
+            config.trace_root, parts, result["parts"], result["merged_findings"])
+    except Exception:
+        pass
     return result

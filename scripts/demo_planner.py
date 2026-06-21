@@ -39,5 +39,7 @@ for p in res["parts"]:
 print(f"\n=== MERGED FINDINGS ({res['total_unique_findings']} unique) ===")
 for f in res["merged_findings"]:
     print(f"  - [{f.get('severity')}] {f.get('summary','')[:96]}")
-if res.get("dashboard_url"):
-    print("\nDashboard:", res["dashboard_url"])
+if res.get("parallel_report"):
+    print("\nParallel report:", res["parallel_report"])
+    import subprocess
+    subprocess.run(["open", res["parallel_report"]])   # one page: all agents + screenshots
