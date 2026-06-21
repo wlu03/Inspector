@@ -28,8 +28,7 @@ class _CounterPageState extends State<CounterPage> {
   int _count = 0;
   bool _subscribed = false;
 
-  // BUG-01: "Plus" increments by 2 instead of 1.
-  void _increment() => setState(() => _count += 2);
+  void _increment() => setState(() => _count += 1);
   void _decrement() => setState(() => _count -= 1);
   // BUG-02: "Reset" sets the count to 1 instead of 0.
   void _reset() => setState(() => _count = 1);
