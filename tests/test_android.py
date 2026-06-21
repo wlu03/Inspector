@@ -143,3 +143,32 @@ def test_parse_uiautomator_labels():
 def test_parse_uiautomator_handles_garbage():
     assert parse_uiautomator_labels("not xml at all") == []
     assert parse_uiautomator_labels("") == []
+
+
+# --- local emulator runtime (pure helpers) ---
+
+def test_emulator_argv_is_headless_ephemeral():
+    from inspector.planes.android import emulator_argv
+    argv = emulator_argv("/sdk/emulator", "inspector", port=5554)
+    assert argv[:5] == ["/sdk/emulator", "-avd", "inspector", "-port", "5554"]
+    assert "-no-snapshot-save" in argv  # ephemeral
+    assert "swiftshader_indirect" in argv  # software GL, works headless
+
+
+def test_parse_avd_list_skips_warnings():
+    from inspector.planes.android import parse_avd_list
+    out = "INFO | Storage...\ninspector\nPixel_7_API_34\n"
+    assert parse_avd_list(out) == ["inspector", "Pixel_7_API_34"]
+
+
+def test_local_runtime_serial_matches_port():
+    from inspector.planes.android import LocalEmulatorRuntime
+    rt = LocalEmulatorRuntime(Config(), avd="inspector", port=5556)
+    assert rt.serial == "emulator-5556"
+
+
+def test_android_adapter_defaults_to_local_transport():
+    # default runtime is local → adb transport has no ssh host
+    a = AndroidAdapter(Config())
+    t = a._make_transport("emulator-5554")
+    assert t.ssh_host is None and t.serial == "emulator-5554"

@@ -39,16 +39,16 @@ class AndroidAdapter(SurfaceAdapter):
 
     # --- lifecycle ---
     def launch(self, repo_path: str, dev_command: str | None = None) -> None:
-        # 1) build the APK from source (gradle / expo prebuild) on the build host
+        # 1) build the APK from source (gradle / expo prebuild), locally
         from ..android_build import AndroidBuilder  # M2.3 — not yet implemented
-        from ..planes.android import RedroidRuntime  # M2.2
 
         build = AndroidBuilder(self.config).build(repo_path)
         self.package, self.activity = build.package, build.activity
 
-        # 2) ensure a Redroid container is up and get an adb transport to it
-        self.plane = RedroidRuntime(self.config)
-        serial = self.plane.start()                 # docker up + adb connect → serial
+        # 2) boot the local Android Emulator (no remote host / SSH / kernel modules)
+        #    and get a LOCAL adb transport to it.
+        self.plane = self._make_runtime()
+        serial = self.plane.start()                 # emulator -avd … → "emulator-5554"
         self.adb = self.adb or self._make_transport(serial)
         self.adb.wait_for_device()
 
@@ -122,14 +122,25 @@ class AndroidAdapter(SurfaceAdapter):
         w, h = self.screen_size()
         return w // 2, h // 2
 
+    def _make_runtime(self):
+        """Pick the Android runtime. Default = local emulator (this machine); set
+        ANDROID_RUNTIME=redroid for the remote container plane."""
+        from ..planes.android import LocalEmulatorRuntime, RedroidRuntime
+        if getattr(self.config, "android_runtime", "local") == "redroid":
+            return RedroidRuntime(self.config)
+        return LocalEmulatorRuntime(self.config)
+
     def _make_transport(self, serial: str):
         from ..adb import AdbTransport
-        return AdbTransport(
-            serial=serial,
-            ssh_host=getattr(self.config, "android_ssh_host", None),
-            ssh_user=getattr(self.config, "android_ssh_user", None),
-            ssh_key=getattr(self.config, "android_ssh_key", None),
-        )
+        # local emulator → local adb (no SSH); SSH is only for the remote redroid plane.
+        if getattr(self.config, "android_runtime", "local") == "redroid":
+            return AdbTransport(
+                serial=serial,
+                ssh_host=getattr(self.config, "android_ssh_host", None),
+                ssh_user=getattr(self.config, "android_ssh_user", None),
+                ssh_key=getattr(self.config, "android_ssh_key", None),
+            )
+        return AdbTransport(serial=serial)  # local mode
 
 
 # --- pure helpers (unit-tested, no device) ---
