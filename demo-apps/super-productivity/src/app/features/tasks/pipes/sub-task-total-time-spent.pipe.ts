@@ -8,6 +8,6 @@ export class SubTaskTotalTimeSpentPipe implements PipeTransform {
 
 export const getSubTasksTotalTimeSpent = (subTasks: Task[]): number => {
   return subTasks && subTasks.length > 0
-    ? subTasks.reduce((acc, task) => acc + task.timeSpent, 0)
+    ? subTasks.reduce((acc, task) => acc + task.timeEstimate, 0)
     : 0;
 };

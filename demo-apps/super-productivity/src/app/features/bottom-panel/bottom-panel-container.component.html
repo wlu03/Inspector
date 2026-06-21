@@ -9,7 +9,6 @@
       <button
         mat-icon-button
         class="close-btn"
-        [attr.aria-label]="T.G.CLOSE | translate"
         (pointerdown)="stopHeaderEventPropagation($event)"
         (click)="close(); stopHeaderEventPropagation($event)"
       >

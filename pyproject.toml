@@ -30,6 +30,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["inspector"]
 
+[tool.pytest.ini_options]
+# Only collect the real suite — keeps pytest from importing scripts/test_*.py helpers
+# (which run project-detection at import and aren't tests).
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

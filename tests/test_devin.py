@@ -80,6 +80,17 @@ def test_fix_with_devin_starts_session_and_marks_fixing(tmp_path):
     assert data["status"] == "fixing" and data["devin_session_id"] == "dev-1"
 
 
+def test_signature_for_finding_resolves_any_surfaced_finding(tmp_path):
+    from inspector.dashboard.aggregate import finding_signature, signature_for_finding
+    root = str(tmp_path)
+    finding = {"id": "fX", "summary": "Save broken", "severity": "high",
+               "suspected_area": "App.jsx:10", "status": "open"}
+    _session_with_finding(root, "ses_a", finding)
+    sig = signature_for_finding(root, "ses_a", "fX")
+    assert sig == finding_signature(finding)
+    assert signature_for_finding(root, "ses_a", "nope") is None
+
+
 def test_poll_devin_records_pr_url(tmp_path):
     root = str(tmp_path)
     finding = {"id": "f0", "summary": "Save broken", "severity": "high",

@@ -154,6 +154,10 @@ class Config:
     devin_base_url: str = "https://api.devin.ai"
     devin_max_acu: int | None = None
     devin_poll_timeout_s: int = 600  # cap waiting on Devin at 10 minutes
+    # Pin the GitHub repo Devin clones/opens PRs against ('owner/name'). Without this,
+    # the target is auto-derived from the app-under-test's git remote, which can point
+    # at an upstream/fork. Force every Devin push to our own repo instead.
+    devin_repo: str | None = "wlu03/LoopBack"
 
     # MCP transport. "stdio" (default, for Claude Code/Cursor) or "http"/"sse" so a
     # REMOTE client (e.g. Devin, via its MCP marketplace) can reach Inspector over the
@@ -204,6 +208,7 @@ class Config:
             devin_base_url=_env("INSPECTOR_DEVIN_URL", default="https://api.devin.ai") or "https://api.devin.ai",
             devin_max_acu=int(_env("INSPECTOR_DEVIN_MAX_ACU") or "0") or None,
             devin_poll_timeout_s=int(_env("INSPECTOR_DEVIN_TIMEOUT", default="600") or "600"),
+            devin_repo=_env("INSPECTOR_DEVIN_REPO", "LOOPBACK_DEVIN_REPO", default="wlu03/LoopBack") or "wlu03/LoopBack",
             transport=_env("INSPECTOR_TRANSPORT", default="stdio") or "stdio",
             http_host=_env("INSPECTOR_HTTP_HOST", default="127.0.0.1") or "127.0.0.1",
             http_port=int(_env("INSPECTOR_HTTP_PORT", default="8765") or "8765"),

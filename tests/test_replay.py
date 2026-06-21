@@ -46,6 +46,12 @@ def test_player_uses_shared_theme():
     assert "Playfair+Display" in html and "--green:#15C78D" in html
 
 
+def test_replay_finding_has_fix_with_devin_button():
+    html = _build_html(_SESS, _FRAMES, _ACTIONS, _FINDINGS)
+    assert "Fix with Devin" in html                 # every surfaced finding can launch Devin
+    assert "devinFix(event" in html and "api/devin-fix" in html
+
+
 def test_replay_has_back_link_to_dashboard():
     html = _build_html(_SESS, _FRAMES, _ACTIONS, _FINDINGS)
     assert "href='../dashboard.html'" in html and "All runs" in html

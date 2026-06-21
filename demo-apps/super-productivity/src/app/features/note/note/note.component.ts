@@ -167,7 +167,7 @@ export class NoteComponent implements OnChanges {
       throw new Error('No note');
     }
     this._noteService.update(this.note.id, {
-      isPinnedToToday: !this.note.isPinnedToToday,
+      isPinnedToToday: this.note.isPinnedToToday,
     });
   }
 

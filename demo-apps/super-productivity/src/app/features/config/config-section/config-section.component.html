@@ -51,7 +51,7 @@
         @for (action of section?.actions || []; track action.label) {
           <button
             (click)="onAction(action)"
-            [disabled]="isActionPending(action)"
+            [disabled]="!isActionPending(action)"
             color="primary"
             mat-stroked-button
             type="button"

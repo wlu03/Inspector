@@ -192,11 +192,21 @@ def _devin_poll(devin_session_id: str) -> dict:
     return out
 
 
+def _resolve_signature(body: dict) -> str | None:
+    """A bug signature from an explicit `signature` OR a `session_id`+`finding_id` —
+    so any surfaced finding (a replay card, not just a ledger row) can launch Devin."""
+    sig = body.get("signature")
+    if not sig and body.get("session_id") and body.get("finding_id"):
+        from .dashboard.aggregate import signature_for_finding
+        sig = signature_for_finding(CONFIG.trace_root, body["session_id"], body["finding_id"])
+    return sig
+
+
 def _dashboard_action(path: str, body: dict) -> dict:
     """Dispatch dashboard POST /api/* actions (the Fix with Devin button)."""
     if path == "/api/devin-fix":
-        sig = body.get("signature")
-        return _devin_fix(sig) if sig else {"error": "missing signature"}
+        sig = _resolve_signature(body)
+        return _devin_fix(sig) if sig else {"error": "missing signature or session_id+finding_id"}
     if path == "/api/devin-status":
         sid = body.get("devin_session_id") or body.get("session_id")
         return _devin_poll(sid) if sid else {"error": "missing devin_session_id"}
@@ -642,15 +652,19 @@ def bug_ledger() -> dict:
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
-def fix_with_devin(signature: str) -> dict:
-    """Hand a Bug Ledger issue to Devin AI — it opens a PR with the fix.
+def fix_with_devin(signature: str = "", session_id: str = "", finding_id: str = "") -> dict:
+    """Hand any surfaced issue to Devin AI — it opens a PR with the fix.
 
-    Starts a Devin session (its API, capped by devin_max_acu), marks the issue
-    `fixing`, and returns the Devin session `devin_url`. Re-run `test_app` after the PR
-    merges and the issue auto-verifies (it no longer reproduces). Needs `DEVIN_API_KEY`.
-    `signature` comes from `bug_ledger()` / the dashboard row.
+    Identify the issue by `signature` (from `bug_ledger()` / a dashboard row) OR by a
+    specific `session_id`+`finding_id` (any finding from `get_findings`/`get_run`/a
+    replay). Starts a Devin session (capped by devin_max_acu), marks it `fixing`, and
+    returns the Devin `devin_url`. Re-run `test_app` after the PR merges and the issue
+    auto-verifies. Needs `DEVIN_API_KEY`.
     """
-    return _devin_fix(signature)
+    sig = _resolve_signature(
+        {"signature": signature, "session_id": session_id, "finding_id": finding_id}
+    )
+    return _devin_fix(sig) if sig else {"error": "provide signature or session_id+finding_id"}
 
 
 @mcp.tool(annotations=READ_ONLY)

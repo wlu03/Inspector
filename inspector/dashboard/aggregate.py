@@ -265,6 +265,22 @@ def findings_for_signature(trace_root: str, signature: str) -> list[dict]:
     return out
 
 
+def signature_for_finding(trace_root: str, session_id: str, finding_id: str) -> str | None:
+    """The bug signature for one specific finding (session_id + finding_id).
+
+    Lets any surfaced finding — a replay card, not just a ledger row — be handed to
+    Devin: resolve it to its signature, then fix_with_devin patches every occurrence.
+    """
+    fdir = os.path.join(trace_root, session_id, "findings")
+    if not os.path.isdir(fdir):
+        return None
+    for name in os.listdir(fdir):
+        data = _read_json(os.path.join(fdir, name))
+        if data.get("id") == finding_id:
+            return finding_signature(data)
+    return None
+
+
 def patch_finding(path: str, fields: dict) -> bool:
     """Merge `fields` into a finding file on disk (used by the Devin fix loop)."""
     data = _read_json(path)
