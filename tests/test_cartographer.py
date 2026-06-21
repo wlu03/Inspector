@@ -1,7 +1,7 @@
-from inspector.cartographer.lenses import LogicArithmeticLens, StateSyncLens
+from inspector.cartographer.lenses import LogicArithmeticLens, PersistenceLens, StateSyncLens
 from inspector.cartographer.mapper import segment
 from inspector.cartographer.models import Region
-from inspector.models import Element
+from inspector.models import ActionType, Element
 
 
 def E(i, label, x, y, w=0.1, h=0.05, interactive=False, role="text"):
@@ -114,6 +114,65 @@ def test_log_tier_fires_when_oracle_silent_but_handler_errors():
     lens = StateSyncLens()
     cand = lens.investigate(sess, region, lens.detect(sess, region, sess.last_elements)[0])
     assert cand is not None and cand.evidence.get("oracle") == "LOG_SIGNAL"
+
+
+def _persistence_session(clears: bool):
+    field = E(0, "", 0.4, 0.10, interactive=True, role="textfield")
+    save = E(1, "Save", 0.4, 0.20, interactive=True, role="button")
+
+    class S:
+        def __init__(self):
+            self.last_elements = [field, save]
+            self.adapter = _Adapter({})
+
+        def act(self, atype, target_id, text, key):
+            if atype == ActionType.TYPE and target_id == 0:
+                self.last_elements = [E(0, text, 0.4, 0.10, interactive=True, role="textfield"), save]
+            elif atype == ActionType.CLICK and target_id == 1 and clears:
+                self.last_elements = [E(0, "", 0.4, 0.10, interactive=True, role="textfield"), save]  # BUG: Save clears
+            return (b"", True, [])
+
+    return S(), Region.make("form", [0.3, 0.05, 0.6, 0.3], [0, 1], "form", ["Save"])
+
+
+def test_persistence_lens_catches_lost_value():
+    sess, region = _persistence_session(clears=True)
+    lens = PersistenceLens()
+    hyps = lens.detect(sess, region, sess.last_elements)
+    assert hyps
+    cand = lens.investigate(sess, region, hyps[0])
+    assert cand is not None and "lost" in cand.issue and cand.severity == "high"
+
+
+def test_persistence_lens_silent_when_value_persists():
+    sess, region = _persistence_session(clears=False)
+    lens = PersistenceLens()
+    assert lens.investigate(sess, region, lens.detect(sess, region, sess.last_elements)[0]) is None
+
+
+def test_toggle_state_reads_native_value():
+    from inspector.cartographer.lenses import _toggle_state
+    assert _toggle_state({"value": "0", "role": "CheckBox"}) == ("0",)   # iOS/macOS a11y
+    assert _toggle_state({"value": "1", "role": "AXSwitch"}) == ("1",)
+    assert _toggle_state({"value": "x", "role": "Button"}) is None        # non-toggle role
+    assert _toggle_state({"pressed": "false"}) == ("false",)              # web aria still works
+
+
+def test_state_sync_catches_inert_toggle():
+    # a checkbox whose value never moves on tap (the Flutter inert-switch class).
+    tog = E(0, "Not subscribed", 0.40, 0.10, interactive=True, role="checkbox")
+    region = Region.make("prefs", [0.3, 0.05, 0.6, 0.2], [0], "panel", ["Not subscribed"])
+
+    class A:
+        def control_state(self, i):
+            return {"value": "0", "role": "CheckBox", "label": "Not subscribed"}
+
+    sess = _Session([tog], A(), lambda s, tid: None)  # tap does nothing → inert
+    lens = StateSyncLens()
+    hyps = lens.detect(sess, region, sess.last_elements)
+    assert hyps  # recognized as a toggle via native value+role
+    cand = lens.investigate(sess, region, hyps[0])
+    assert cand is not None and "inert" in cand.issue
 
 
 def test_state_sync_silent_when_label_and_state_move_together():

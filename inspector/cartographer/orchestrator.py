@@ -26,8 +26,14 @@ def _suggested_fix(c: Candidate) -> str:
     if c.lens == "logic_arithmetic" and "RESET_TO" in o:
         return "The reset handler sets the wrong baseline — set the value to 0 instead of its current literal."
     if c.lens == "state_sync":
+        if "INERT" in c.evidence.get("oracle", ""):
+            return ("The toggle's onChanged/onTap handler doesn't update its bound state — make the handler "
+                    "actually mutate the model (e.g. setState(() => value = newValue)), not a no-op.")
         return ("The toggle updates its label without writing through to the backing state (or vice-versa) — "
                 "update the model in the same handler that flips the label, and bind aria-checked/checked to it.")
+    if c.lens == "persistence":
+        return ("The Save/Submit handler clears or fails to persist the field — keep the entered value "
+                "(don't reset the field) when saving, and re-seed it from the model on re-render.")
     return "Review the control's handler against the expected behavior."
 
 
@@ -49,7 +55,7 @@ def _latest_frame(session) -> str | None:
     return f"frame_{n - 1:04d}.png" if n > 0 else None
 
 
-def run_regions(session, max_regions: int = 8, max_hypotheses: int = 12) -> dict:
+def run_regions(session, max_regions: int = 8, max_hypotheses: int = 12, verify: bool = True) -> dict:
     session.observe()
     elements = capture(session)  # interactive + displayed text
     regions = segment(elements)[:max_regions]
@@ -67,6 +73,13 @@ def run_regions(session, max_regions: int = 8, max_hypotheses: int = 12) -> dict
                 cand = lens.investigate(session, region, hyp)
                 if cand is None:
                     continue
+                # 2-of-2 verify: re-run the same protocol; a deterministic oracle re-fires,
+                # a flaky one (e.g. a transient log) does not — kills self-inflicted noise.
+                if verify:
+                    recheck = lens.investigate(session, region, hyp)
+                    if recheck is None:
+                        continue  # not reproduced — drop
+                    cand = recheck
                 fid = _record(session, cand, _latest_frame(session))
                 candidates.append(cand)
                 fixes.append({

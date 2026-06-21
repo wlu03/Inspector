@@ -39,6 +39,12 @@ class AndroidAdapter(SurfaceAdapter):
 
     # --- lifecycle ---
     def launch(self, repo_path: str, dev_command: str | None = None) -> None:
+        # ATTACH mode: an already-installed app on a running (or AVD-bootable) emulator.
+        # Skips the source build entirely — drive what's already on the device.
+        if getattr(self.config, "android_package", None):
+            self._launch_attached()
+            return
+
         # 1) build the APK from source (gradle / expo prebuild), locally
         from ..android_build import AndroidBuilder  # M2.3 — not yet implemented
 
@@ -57,6 +63,53 @@ class AndroidAdapter(SurfaceAdapter):
         self.adb.install(build.apk_path)
         self.adb.shell("logcat -c")
         self.adb.shell(f"am start -n {self.package}/{self.activity}")
+
+    def _launch_attached(self) -> None:
+        """Attach to an already-installed package — no build, no install.
+
+        Picks a device (configured serial → first running emulator → boot the AVD),
+        resolves the app's launch activity, wakes the screen, and starts it. Only boots
+        (and therefore later stops) the emulator if none was already running.
+        """
+        self.package = self.config.android_package
+        serial = self._resolve_serial()
+        if serial:
+            self.adb = self.adb or self._make_transport(serial)  # attach to existing
+        else:
+            self.plane = self._make_runtime()                    # boot the AVD ourselves
+            serial = self.plane.start()
+            self.adb = self.adb or self._make_transport(serial)
+        self.adb.wait_for_device()
+
+        self._wake()
+        component = self.config.android_activity or resolve_component(
+            self.adb.shell(f"cmd package resolve-activity --brief {self.package}")
+        )
+        self.activity = component
+        self.adb.shell("logcat -c")
+        if component:
+            self.adb.shell(f"am start -n {component}")
+        else:  # no resolvable activity → launcher intent
+            self.adb.shell(
+                f"monkey -p {self.package} -c android.intent.category.LAUNCHER 1"
+            )
+
+    def _resolve_serial(self) -> str | None:
+        """The device to attach to: configured serial, else the first running one.
+        None means 'nothing running' → the caller boots an AVD."""
+        if self.config.android_serial:
+            return self.config.android_serial
+        try:
+            import subprocess
+
+            from ..planes.android import _sdk_bin
+            out = subprocess.run(
+                [_sdk_bin("platform-tools", "adb"), "devices"],
+                capture_output=True, text=True, timeout=15,
+            ).stdout
+        except Exception:
+            return None
+        return first_device_serial(out)
 
     def is_ready(self, timeout_s: float = 60.0) -> bool:
         deadline = time.time() + timeout_s
@@ -167,6 +220,29 @@ class AndroidAdapter(SurfaceAdapter):
 
 
 # --- pure helpers (unit-tested, no device) ---
+
+def first_device_serial(out: str) -> str | None:
+    """First ready device serial from `adb devices` output (skips offline/unauthorized).
+    Pure — used by attach mode to find a running emulator without booting one."""
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("List of devices"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            return parts[0]
+    return None
+
+
+def resolve_component(out: str) -> str | None:
+    """The `pkg/activity` component from `cmd package resolve-activity --brief`. Pure.
+    The component is the last non-empty line that looks like `a.b.c/.Activity`."""
+    for line in reversed((out or "").splitlines()):
+        line = line.strip()
+        if "/" in line and " " not in line and "=" not in line:
+            return line
+    return None
+
 
 def filter_app_logs(lines: list[str], package: str) -> list[str]:
     """Keep only the app's lines + crash markers when no pid is available (app crashed).

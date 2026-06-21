@@ -124,7 +124,14 @@ def _toggle_state(cs: dict) -> tuple | None:
     """A signature of a control's togglable state, or None if it isn't a toggle."""
     keys = [cs.get("checked"), cs.get("pressed"), cs.get("ariaChecked"), cs.get("selected")]
     present = [k for k in keys if k not in (None, "", "undefined")]
-    return tuple(str(k).lower() for k in present) if present else None
+    if present:
+        return tuple(str(k).lower() for k in present)
+    # native a11y (iOS/macOS): a switch/checkbox exposes its on/off in "value".
+    role = (cs.get("role") or "").lower()
+    val = cs.get("value")
+    if val not in (None, "", "undefined") and any(t in role for t in ("switch", "checkbox", "toggle", "radio")):
+        return (str(val).lower(),)
+    return None
 
 
 class StateSyncLens:
@@ -178,7 +185,68 @@ class StateSyncLens:
                              {"before": {"label": before_label, "state": before_state},
                               "after": {"label": after_label, "state": after_state},
                               "oracle": f"CONTROL_STATE_MATCHES_LABEL label_changed={label_changed} state_changed={state_changed}"})
+        elif not label_changed and not state_changed:  # INERT — a toggle that moves nothing
+            cand = Candidate(self.name, region.region_id,
+                             f"toggle {hyp.meta['label']!r} is inert — tapping it changes neither its label nor its state",
+                             "tapping a toggle flips its state",
+                             f"label {before_label!r} and state {before_state} both unchanged after a tap",
+                             "medium", region.bbox,
+                             {"before": {"label": before_label, "state": before_state},
+                              "after": {"label": after_label, "state": after_state},
+                              "oracle": "TOGGLE_INERT: no change on tap"})
         return cand or _log_candidate(self.name, region, hyp.meta["label"], logs)
 
 
-LENSES = [LogicArithmeticLens(), StateSyncLens()]
+_SAVE = {"save", "submit", "continue", "apply", "done", "update", "confirm", "ok"}
+_FIELD_ROLES = {"textfield", "textarea", "input", "searchfield", "combobox"}
+
+
+class PersistenceLens:
+    """A value typed into a field must survive a Save/Submit (catches macOS 'Save
+    clears the name'). Uses a benign realistic sentinel — NEVER a payload — so a
+    lost/blank read is unambiguously the app's fault, not self-injection (docs/15 §4)."""
+
+    name = "persistence"
+    SENTINEL = "Insp3ctorName"
+
+    @staticmethod
+    def _field(els, region) -> Element | None:
+        return next((e for e in els if e.interactivity and e.role in _FIELD_ROLES and _in_region(e, region)), None)
+
+    def detect(self, session, region, els: list[Element]) -> list[Hypothesis]:
+        field = self._field(els, region)
+        save = next((e for e in els if e.interactivity and norm(e.label) in _SAVE and _in_region(e, region)), None)
+        if field is None or save is None:
+            return []
+        return [Hypothesis(self.name, region.region_id, save.label,
+                           f"a value typed into the field persists after tapping {save.label!r}",
+                           {"save": save.label})]
+
+    def investigate(self, session, region, hyp: Hypothesis) -> Candidate | None:
+        field = self._field(capture(session), region)
+        if field is None:
+            return None
+        try:
+            session.act(ActionType.TYPE, field.id, self.SENTINEL, None)
+        except Exception:
+            return None
+        save = _find_button(capture(session), region, norm(hyp.meta["save"]))
+        if save is None:
+            return None
+        try:
+            session.act(ActionType.CLICK, save.id, None, None)
+        except Exception:
+            return None
+        field2 = self._field(capture(session), region)
+        val = field2.label if field2 else ""
+        if self.SENTINEL.lower() not in norm(val):
+            return Candidate(self.name, region.region_id,
+                             f"the typed value was lost after tapping {hyp.meta['save']!r}",
+                             f"the field still shows {self.SENTINEL!r}", f"the field shows {val!r}",
+                             "high", region.bbox,
+                             {"sentinel": self.SENTINEL, "after": val,
+                              "oracle": "FIELD_PERSISTS: sentinel not present after save"})
+        return None
+
+
+LENSES = [LogicArithmeticLens(), StateSyncLens(), PersistenceLens()]

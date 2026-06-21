@@ -96,6 +96,17 @@ class Config:
     # is far lighter. Web/Electron use the E2B Linux sandbox independently of this.
     execution: str = "local"
 
+    # Android. Setting `android_package` switches the AndroidAdapter to ATTACH mode:
+    # skip the source build and drive an already-installed app on a running emulator
+    # (resolving its launch activity), instead of building+installing from repo_path.
+    # `android_serial`/`android_avd` pick / boot the device; `android_runtime` =
+    # "local" (AVD) or "redroid" (container plane).
+    android_package: str | None = None
+    android_activity: str | None = None   # optional; auto-resolved if omitted
+    android_serial: str | None = None     # optional; else first running device, else boot AVD
+    android_avd: str | None = None
+    android_runtime: str = "local"
+
     # Sandbox
     sandbox_resolution: tuple[int, int] = (1280, 800)
     sandbox_timeout_s: int = 3600
@@ -176,6 +187,11 @@ class Config:
             macos_app=_env("INSPECTOR_MACOS_APP", "LOOPBACK_MACOS_APP"),
             flutter_bin=_env("INSPECTOR_FLUTTER_BIN", "LOOPBACK_FLUTTER_BIN", default="flutter") or "flutter",
             execution=_env("INSPECTOR_EXECUTION", "LOOPBACK_EXECUTION", default="local") or "local",
+            android_package=_env("INSPECTOR_ANDROID_PACKAGE"),
+            android_activity=_env("INSPECTOR_ANDROID_ACTIVITY"),
+            android_serial=_env("INSPECTOR_ANDROID_SERIAL"),
+            android_avd=_env("INSPECTOR_ANDROID_AVD"),
+            android_runtime=_env("INSPECTOR_ANDROID_RUNTIME", default="local") or "local",
             driver_ref=_env("INSPECTOR_DRIVER_REF", "LOOPBACK_DRIVER_REF", default=DEFAULT_DRIVER_REF) or DEFAULT_DRIVER_REF,
             sandbox_template=_env("INSPECTOR_E2B_TEMPLATE", "E2B_TEMPLATE"),
             session_idle_ttl_s=int(_env("INSPECTOR_SESSION_IDLE_TTL", "LOOPBACK_SESSION_IDLE_TTL", default="600") or "600"),

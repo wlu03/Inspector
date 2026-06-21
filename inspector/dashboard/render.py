@@ -138,6 +138,7 @@ def _row(s: dict) -> str:
         dot, verdict = "dot-unknown", "review"
     else:
         dot, verdict = "dot-pass", "clean"
+    is_fail = verdict in ("fail", "error")  # drives the "only failures" filter
     replay = s.get("replay_path")
     link = (
         f"<a class='replay-link' href='{_e(replay)}' target='_blank' rel='noopener'>▶ replay</a>"
@@ -153,7 +154,7 @@ def _row(s: dict) -> str:
     sev_score = (sev.get("critical", 0) * 1000 + sev.get("high", 0) * 100
                  + sev.get("medium", 0) * 10 + sev.get("low", 0))
     return (
-        f"<tr id='{_e(s.get('id'))}' data-search='{_e(search)}' data-fail='{1 if passed is False else 0}'>"
+        f"<tr id='{_e(s.get('id'))}' data-search='{_e(search)}' data-fail='{1 if is_fail else 0}'>"
         f"<td data-sort='{_e(verdict)}'><span class='dot {dot}'></span> <span class='mono' style='font-size:12px'>{_e(verdict)}</span></td>"
         f"<td data-sort='{_e(s.get('surface'))}'><span class='badge'>{_e(s.get('surface'))}</span></td>"
         f"<td data-sort='{_e((s.get('goal') or '').lower())}'><div class='goal'>{_e(s.get('goal') or '(no goal)')}</div>"
