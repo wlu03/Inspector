@@ -107,6 +107,11 @@ def planned_verify(config, repo_path: str, surface=None, goal: str = "find bugs"
     """Plan → dispatch → merge: the planner maps the app into parts, then a headless
     agent per part traverses it in parallel. The one-call multi-agent sweep."""
     parts = plan_parts(config, repo_path, surface, goal)[:max_agents]
+    # iOS: the scout (plan_parts) already built the .app, and N concurrent xcodebuilds
+    # would contend on the shared derivedData — so the fan-out agents reuse that build.
+    if str(getattr(surface, "value", surface) or "").lower() == "ios":
+        import os
+        os.environ["INSPECTOR_IOS_PREBUILT"] = "1"
     result = parallel_verify(config, repo_path, parts, surface, max_steps, max_workers=max_agents)
     result["plan"] = parts
     try:

@@ -43,10 +43,27 @@ def github_repo(repo_path: str | None = None) -> str | None:
     return None
 
 
-def build_fix_prompt(finding: dict, repo_path: str, surface: str = "") -> str:
-    """Devin task prompt for one finding — fix the root cause and open a PR."""
+# Surface → where the code lives + how the runtime state maps back to source, so Devin
+# can locate the fix even when 'Suspected location' is a behavioural description.
+_SOURCE_HINT = {
+    "ios": "SwiftUI/Swift files (*.swift) — on-screen text is a Text's content, a "
+           "field's typed value is its @State/binding, and views carry accessibilityIdentifier",
+    "android": "Kotlin/Java + layout XML (*.kt, *.java, *.xml)",
+    "web": "JS/TS + HTML/JSX (*.js, *.ts, *.tsx, *.jsx, *.html)",
+    "electron": "the renderer JS/HTML and the main process (*.js, *.html, *.ts)",
+}
+
+
+def build_fix_prompt(
+    finding: dict, repo_path: str, surface: str = "", repo: str | None = None
+) -> str:
+    """Devin task prompt for one finding — enough context to LOCATE, fix, and open a PR.
+
+    `repo` pins the target GitHub 'owner/name' (so every PR lands on our repo); when
+    omitted it falls back to the app-under-test's own git remote.
+    """
     base = fix_prompt(finding, {"repo_path": repo_path, "surface": surface})
-    repo = github_repo(repo_path)
+    repo = repo or github_repo(repo_path)
     where = (f"In the GitHub repository **{repo}**" if repo
              else "In the repository above")
     rel = ""
@@ -60,12 +77,20 @@ def build_fix_prompt(finding: dict, repo_path: str, surface: str = "") -> str:
                 rel = os.path.relpath(repo_path, root)
         except Exception:
             rel = ""
-    sub = f" (the affected app is under `{rel}/`)" if rel and rel != "." else ""
+    area = f"`{rel}/`" if rel and rel != "." else "the repository"
+    hint = _SOURCE_HINT.get((surface or "").lower(), "the application source")
     return (
         base
-        + f"\n\n{where}{sub}: implement a minimal, focused fix for the root cause, run the "
-          "project's build/tests, and OPEN A PULL REQUEST with the change. Do not refactor "
-          "unrelated code or modify example/test fixtures beyond the fix."
+        + f"\n\n{where} — the affected app is under {area}.\n"
+        "LOCATING THE CODE: the 'Suspected location' above may be a behavioural "
+        f"description, not a file path. Find the code by grepping {area} for the exact "
+        "on-screen text, labels, and identifiers quoted in What's wrong / Expected / "
+        f"Actual ({hint}).\n"
+        "THEN: implement a minimal, focused fix for the ROOT CAUSE; build and run the "
+        "project's tests; and OPEN A PULL REQUEST with a clear title and a description "
+        "that states the bug (severity, expected vs actual), the fix, and how you "
+        "verified it. Keep the diff minimal — do not refactor unrelated code or modify "
+        "example/test fixtures beyond the fix."
     )
 
 
@@ -129,7 +154,9 @@ def fix_with_devin(cfg, trace_root: str, signature: str, _api_fn=_api) -> dict:
 
     latest = matches[0]
     finding, repo = latest["data"], latest["repo_path"]
-    prompt = build_fix_prompt(finding, repo, finding.get("_surface", ""))
+    prompt = build_fix_prompt(
+        finding, repo, finding.get("_surface", ""), repo=getattr(cfg, "devin_repo", None)
+    )
     title = f"Fix: {finding.get('summary', 'bug')}"[:120]
 
     try:
