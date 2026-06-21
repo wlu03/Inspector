@@ -117,8 +117,15 @@ class AndroidAdapter(SurfaceAdapter):
 
     # --- ears (the deterministic crash/error signal) ---
     def logs(self) -> list[str]:
-        raw = self.adb.logcat("crash,main")
-        return [ln for ln in raw.splitlines() if ln.strip()]
+        # Scope to the app's process so logcat doesn't return other apps' noise (the
+        # background NullPointerExceptions we saw). If the app crashed (no pid), fall
+        # back to filtering the raw buffer to our package + crash markers.
+        pid = self.adb.shell(f"pidof -s {self.package}").strip() if self.package else ""
+        raw = self.adb.logcat("crash,main", pid=pid or None)
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        if not pid and self.package:
+            lines = filter_app_logs(lines, self.package)
+        return lines
 
     # --- the "DOM": view hierarchy for the missing-element oracle ---
     def rendered_elements(self) -> list[str]:
@@ -160,6 +167,16 @@ class AndroidAdapter(SurfaceAdapter):
 
 
 # --- pure helpers (unit-tested, no device) ---
+
+def filter_app_logs(lines: list[str], package: str) -> list[str]:
+    """Keep only the app's lines + crash markers when no pid is available (app crashed).
+    Drops unrelated background-process noise. Pure."""
+    out = []
+    for ln in lines:
+        if (package and package in ln) or "AndroidRuntime" in ln or "FATAL" in ln:
+            out.append(ln)
+    return out
+
 
 def keycode(key: str | None) -> int | None:
     if not key:

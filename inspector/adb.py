@@ -65,5 +65,8 @@ class AdbTransport:
     def wait_for_device(self, timeout: int = 120) -> None:
         self.run(["wait-for-device"], timeout)
 
-    def logcat(self, buffers: str = "crash,main", timeout: int = 30) -> str:
-        return self.run(["logcat", "-b", buffers, "-d"], timeout).stdout.decode("utf-8", "replace")
+    def logcat(self, buffers: str = "crash,main", pid: str | None = None, timeout: int = 30) -> str:
+        args = ["logcat", "-b", buffers, "-d"]
+        if pid:
+            args += ["--pid", pid]   # scope to the app's process → no other-app noise
+        return self.run(args, timeout).stdout.decode("utf-8", "replace")

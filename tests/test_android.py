@@ -50,7 +50,7 @@ class _FakeAdb:
         self.calls.append(cmd)
         return b"PNGBYTES"
 
-    def logcat(self, buffers="crash,main", timeout=30):
+    def logcat(self, buffers="crash,main", pid=None, timeout=30):
         return "F/libc: Fatal signal 11\nI/Chatty: ok\n"
 
 
@@ -99,6 +99,20 @@ def test_screenshot_uses_exec_out_screencap():
 def test_logs_filters_blank_lines():
     a = _adapter()
     assert a.logs() == ["F/libc: Fatal signal 11", "I/Chatty: ok"]
+
+
+def test_filter_app_logs_keeps_app_and_crashes():
+    from inspector.adapters.android import filter_app_logs
+    lines = [
+        "E ctbc: NullPointerException in some.other.app",       # background noise → dropped
+        "E Inspector: query not invalidated  com.inspector.sample",  # our package → kept
+        "E AndroidRuntime: FATAL EXCEPTION: main",              # crash marker → kept
+        "I Chatty: unrelated",                                  # noise → dropped
+    ]
+    out = filter_app_logs(lines, "com.inspector.sample")
+    assert len(out) == 2
+    assert any("com.inspector.sample" in ln for ln in out)
+    assert any("AndroidRuntime" in ln for ln in out)
 
 
 def test_wake_keeps_screen_on():
