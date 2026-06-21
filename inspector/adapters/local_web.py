@@ -126,6 +126,10 @@ class _SPAHandler(http.server.SimpleHTTPRequestHandler):
     """Static file server that falls back to index.html for client-side routes (SPA)."""
 
     def do_GET(self):  # noqa: N802
+        if self.path.startswith("/favicon.ico"):
+            self.send_response(204)  # no favicon → don't emit a 404 the log-tap flags
+            self.end_headers()
+            return
         path = self.translate_path(self.path)
         if not os.path.exists(path) and "." not in os.path.basename(self.path):
             self.path = "/index.html"  # SPA deep link → serve the app shell

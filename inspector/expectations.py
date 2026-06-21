@@ -77,6 +77,15 @@ def check_expectations(session, expected: list[ExpectedElement], judge_fn) -> li
     if not candidates:
         return []
 
+    # Sanity guard against blank / mid-navigation frames: the oracle is only credible
+    # when the screen actually rendered. If we captured no labels, or MOST of what the
+    # code declares looks "missing", that's a bad frame (or a CDP hiccup) — not N real
+    # defects. A genuine miss is a few absences among many present elements, so require
+    # a solid baseline of present elements before trusting any absence.
+    present = len(expected) - len(candidates)
+    if not actual or present < max(2, len(expected) * 0.4):
+        return []
+
     try:
         screenshot = session.adapter.screenshot()
     except Exception:
