@@ -184,9 +184,11 @@ class Session:
             frame_after = self.trace.save_frame(after)
             changed = before != after
             logs = self.adapter.logs()
-            self.guard.observe_state(after, logs)
             self.trace.record_logs(logs)
-            self._ingest_findings(logs)
+            new_findings = self._ingest_findings(logs)
+            # a fresh error/finding counts as progress even if the screen looks the same —
+            # a buggy toggle that doesn't repaint is a bug, not a reason to give up.
+            self.guard.observe_state(after, signal=new_findings > 0)
 
             action = Action(
                 seq=self.action_seq, type=action_type, target_id=target_id, coords=click_xy,
@@ -274,7 +276,9 @@ class Session:
             return f"{verb} element #{target_id}" + (f" ({label})" if label else "")
         return verb
 
-    def _ingest_findings(self, logs: list[str]) -> None:
+    def _ingest_findings(self, logs: list[str]) -> int:
+        """Save new deterministic findings; return how many were new (for the guard)."""
+        new = 0
         for finding in detection.scan_logs(logs, self.record.id, self.record.trace_id):
             sig = detection.finding_signature(finding)
             if sig in self._seen_findings:
@@ -284,6 +288,8 @@ class Session:
                 finding.repro = self.action_log[-4:] or ["(observed without prior actions)"]
             self.trace.save_finding(finding)
             self.record.findings.append(finding.id)
+            new += 1
+        return new
 
 
 class SessionManager:

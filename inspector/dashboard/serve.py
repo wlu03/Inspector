@@ -20,6 +20,8 @@ _LOCK = threading.Lock()
 # Powers the dashboard's live feed (GET /live.json) so in-progress runs show up
 # mid-run without rebuilding the static files.
 _live_provider = None
+# Optional callable (path:str, body:dict) -> dict for POST /api/* (e.g. Fix with Devin).
+_action_handler = None
 
 
 def set_live_provider(fn) -> None:
@@ -28,26 +30,22 @@ def set_live_provider(fn) -> None:
     _live_provider = fn
 
 
+def set_action_handler(fn) -> None:
+    """Register a `(path, body) -> dict` to handle dashboard POST /api/* actions."""
+    global _action_handler
+    _action_handler = fn
+
+
 class _QuietHandler(SimpleHTTPRequestHandler):
     # The MCP talks over stdio — never write request logs to stdout.
     def log_message(self, *args) -> None:  # noqa: D401
         pass
 
-    def do_GET(self) -> None:
-        if self.path.split("?")[0].rstrip("/") == "/live.json":
-            self._serve_live()
-            return
-        super().do_GET()
-
-    def _serve_live(self) -> None:
+    def _send_json(self, data: dict, code: int = 200) -> None:
         import json as _json
 
-        try:
-            data = _live_provider() if _live_provider else {"sessions": []}
-        except Exception:
-            data = {"sessions": []}
         body = _json.dumps(data).encode()
-        self.send_response(200)
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
@@ -56,6 +54,37 @@ class _QuietHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
         except Exception:
             pass
+
+    def do_GET(self) -> None:
+        if self.path.split("?")[0].rstrip("/") == "/live.json":
+            try:
+                data = _live_provider() if _live_provider else {"sessions": []}
+            except Exception:
+                data = {"sessions": []}
+            self._send_json(data)
+            return
+        super().do_GET()
+
+    def do_POST(self) -> None:
+        import json as _json
+
+        path = self.path.split("?")[0]
+        if not path.startswith("/api/"):
+            self._send_json({"error": "not found"}, 404)
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = _json.loads(raw or b"{}")
+        except Exception:
+            body = {}
+        if _action_handler is None:
+            self._send_json({"error": "no action handler registered"}, 503)
+            return
+        try:
+            self._send_json(_action_handler(path, body))
+        except Exception as exc:  # noqa: BLE001
+            self._send_json({"error": str(exc)[:200]}, 500)
 
 
 def ensure_server(trace_root: str, port: int = 7321, host: str = "127.0.0.1") -> str:

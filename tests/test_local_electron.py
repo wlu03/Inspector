@@ -76,6 +76,21 @@ def test_screen_size_is_viewport():
     assert _adapter(_FakeCDP()).screen_size() == (1280, 800)
 
 
+def test_screenshot_downscales_2x_to_css_viewport():
+    # #7: Page.captureScreenshot is at devicePixelRatio (2x Retina); the adapter must
+    # downscale to the CSS viewport so screenshot px == screen_size() == Input.* coords.
+    import io
+
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (1600, 1000), "white").save(buf, "PNG")  # 2x of an 800x500 viewport
+    cdp = _FakeCDP()
+    cdp.screenshot = lambda: buf.getvalue()
+    a = _adapter(cdp)
+    a._viewport = (800, 500)
+    assert Image.open(io.BytesIO(a.screenshot())).size == (800, 500)
+
+
 def test_logs_drains_console():
     assert _adapter(_FakeCDP(console=["[console.error] boom"])).logs() == ["[console.error] boom"]
 

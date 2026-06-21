@@ -11,6 +11,13 @@ from ..config import Config
 from ..models import Element
 
 
+def _is_image(image_bytes: bytes) -> bool:
+    """Cheap magic-byte check for PNG/JPEG — guards against empty/garbage screenshots."""
+    return bool(image_bytes) and (
+        image_bytes[:8] == b"\x89PNG\r\n\x1a\n" or image_bytes[:3] == b"\xff\xd8\xff"
+    )
+
+
 class Detector(Protocol):
     def detect(self, image_bytes: bytes) -> list[Element]: ...
 
@@ -40,14 +47,20 @@ class OmniParserDetector:
 
     def detect(self, image_bytes: bytes) -> list[Element]:
         backend = self.config.detector_backend
-        if backend == "replicate":
-            raw = self._detect_replicate(image_bytes)
-        elif backend == "http":
-            raw = self._detect_http(image_bytes)
-        else:
+        if backend not in ("replicate", "http"):
             raise NotImplementedError(
                 f"detector backend {backend!r} not implemented (see docs/11 Part D)"
             )
+        # An empty/invalid screenshot (CDP/adb dropped, renderer mid-reload) means no
+        # elements — never ship it to the backend (OmniParser errors on a non-image and
+        # would crash the whole loop). Return [] and let the loop wind down gracefully.
+        if not _is_image(image_bytes):
+            return []
+        try:
+            raw = (self._detect_replicate(image_bytes) if backend == "replicate"
+                   else self._detect_http(image_bytes))
+        except Exception:
+            return []  # a detector/backend hiccup must not kill the run
         return self._to_elements(raw, image_bytes)
 
     def _detect_replicate(self, image_bytes: bytes) -> list[dict]:

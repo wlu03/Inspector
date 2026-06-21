@@ -109,6 +109,47 @@ def test_wake_keeps_screen_on():
     assert any("dismiss-keyguard" in c for c in a.adb.calls)
 
 
+# --- LOW-c: DRAG must not interpolate None into the shell string ---
+
+def test_drag_with_missing_endpoints_is_noop():
+    a = _adapter()
+    a.input(InputAction(ActionType.DRAG, x=10, y=20))  # to_x/to_y default None
+    assert a.adb.calls == []  # no "input swipe 10 20 None None 300"
+
+
+def test_drag_swipes_when_endpoints_present():
+    a = _adapter()
+    a.input(InputAction(ActionType.DRAG, x=10, y=20, to_x=30, to_y=40))
+    assert a.adb.calls == ["input swipe 10 20 30 40 300"]
+
+
+# --- #3a: adb run() surfaces real failures, stays quiet on benign non-zero ---
+
+class _CP:
+    def __init__(self, rc, out=b"", err=b""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_adb_run_warns_on_real_failure(monkeypatch, caplog):
+    from inspector import adb as adbmod
+    monkeypatch.setattr(adbmod.subprocess, "run", lambda *a, **k: _CP(1, b"", b"adb: device offline"))
+    t = AdbTransport(serial="x")
+    with caplog.at_level("WARNING", logger="inspector"):
+        out = t.shell("dumpsys activity")
+    assert out == ""  # still returns (empty) stdout — callers unchanged
+    assert any("device offline" in r.getMessage() for r in caplog.records)
+
+
+def test_adb_run_silent_on_benign_nonzero(monkeypatch, caplog):
+    # grep with no match -> returncode 1, empty stderr: NOT a failure, must not warn.
+    from inspector import adb as adbmod
+    monkeypatch.setattr(adbmod.subprocess, "run", lambda *a, **k: _CP(1, b"", b""))
+    t = AdbTransport(serial="x")
+    with caplog.at_level("WARNING", logger="inspector"):
+        t.shell("ps | grep nothing")
+    assert not any("failed" in r.getMessage() for r in caplog.records)
+
+
 # --- parsers (pure) ---
 
 def test_keycode_known_and_numeric_and_unknown():

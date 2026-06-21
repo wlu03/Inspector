@@ -172,6 +172,136 @@ def finding_signature(finding: dict) -> str:
     return f"{sev}|{finding.get('suspected_area', '')}|{summary[:120]}"
 
 
+def _brief(f: dict) -> dict:
+    return {
+        "summary": f.get("summary", ""),
+        "severity": (f.get("severity") or "low").lower(),
+        "suspected_area": f.get("suspected_area", ""),
+    }
+
+
+def _session_signatures(trace_root: str, sid: str) -> dict[str, dict]:
+    """{finding_signature -> finding} for one session."""
+    return {finding_signature(f): f for f in _load_findings(os.path.join(trace_root, sid))}
+
+
+_STATUS_ORDER = {"open": 0, "fixing": 1, "fixed": 2, "verified": 3, "dismissed": 4}
+
+
+def bug_ledger(trace_root: str) -> list[dict]:
+    """Every unique issue (by signature, per repo) with its CURRENT fix status.
+
+    Status is evidence-based across runs: an issue present in the repo's latest run is
+    `open`; one that appeared in an earlier run but is GONE from the latest run is
+    `verified` (fixed — it no longer reproduces). A finding explicitly marked
+    `dismissed` (via update_finding_status) stays dismissed. This is how the dashboard
+    answers "was it ever fixed?" without trusting a manual flag alone.
+    """
+    runs = scan_sessions(trace_root)  # newest first
+    sigs_by_sid = {s["id"]: _session_signatures(trace_root, s["id"]) for s in runs}
+
+    by_repo: dict[str, list[dict]] = {}
+    for s in runs:  # newest first preserved within each repo
+        by_repo.setdefault(s["repo_path"], []).append(s)
+
+    ledger: list[dict] = []
+    for repo, repo_runs in by_repo.items():
+        latest_sigs = sigs_by_sid[repo_runs[0]["id"]]
+        groups: dict[str, dict] = {}
+        for s in repo_runs:  # newest → oldest
+            for sig, f in sigs_by_sid[s["id"]].items():
+                g = groups.setdefault(sig, {
+                    "signature": sig, "summary": f.get("summary", ""),
+                    "severity": (f.get("severity") or "low").lower(),
+                    "suspected_area": f.get("suspected_area", ""),
+                    "repo_path": repo, "sessions": [], "manual": None,
+                    "devin_url": None, "pr_url": None,
+                })
+                g["sessions"].append(s["id"])
+                st = (f.get("status") or "open").lower()
+                if g["manual"] is None and st in ("dismissed", "fixing", "fixed", "verified"):
+                    g["manual"] = st
+                if not g["devin_url"] and f.get("devin_url"):
+                    g["devin_url"] = f["devin_url"]
+                if not g["pr_url"] and f.get("pr_url"):
+                    g["pr_url"] = f["pr_url"]
+        for sig, g in groups.items():
+            present = sig in latest_sigs
+            if g["manual"] == "dismissed":
+                status = "dismissed"
+            elif present:
+                status = "fixing" if g["manual"] == "fixing" else "open"
+            else:
+                status = "verified"  # seen before, absent from the latest run → fixed
+            g.update({
+                "status": status,
+                "present_latest": present,
+                "occurrences": len(g["sessions"]),
+                "latest_session": repo_runs[0]["id"],
+            })
+            g.pop("manual", None)
+            ledger.append(g)
+
+    ledger.sort(key=lambda g: (_STATUS_ORDER.get(g["status"], 9),
+                               _SEV_ORDER.get(g["severity"], 9)))
+    return ledger
+
+
+def findings_for_signature(trace_root: str, signature: str) -> list[dict]:
+    """Every finding file matching `signature`, newest run first, with its repo/session."""
+    out: list[dict] = []
+    for s in scan_sessions(trace_root):  # newest first
+        fdir = os.path.join(trace_root, s["id"], "findings")
+        if not os.path.isdir(fdir):
+            continue
+        for name in sorted(os.listdir(fdir)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(fdir, name)
+            data = _read_json(path)
+            if data and finding_signature(data) == signature:
+                out.append({"path": path, "data": data, "repo_path": s["repo_path"],
+                            "session_id": s["id"], "created_at": s["created_at"]})
+    return out
+
+
+def patch_finding(path: str, fields: dict) -> bool:
+    """Merge `fields` into a finding file on disk (used by the Devin fix loop)."""
+    data = _read_json(path)
+    if not data:
+        return False
+    data.update(fields)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    return True
+
+
+def latest_update(trace_root: str) -> dict:
+    """What changed in the most recent run vs the prior run of the SAME repo.
+
+    The 'update' the dashboard surfaces: issues newly `verified` (gone since last run),
+    `new` (appeared this run), and `still_open` (persisted). Empty when there's no run.
+    """
+    runs = scan_sessions(trace_root)  # newest first
+    if not runs:
+        return {}
+    latest = runs[0]
+    repo = latest["repo_path"]
+    repo_runs = [s for s in runs if s["repo_path"] == repo]  # newest first
+    cur = _session_signatures(trace_root, latest["id"])
+    prev = _session_signatures(trace_root, repo_runs[1]["id"]) if len(repo_runs) > 1 else {}
+    cur_set, prev_set = set(cur), set(prev)
+    return {
+        "repo_path": repo,
+        "run_id": latest["id"],
+        "alias": latest.get("alias"),
+        "has_prev": len(repo_runs) > 1,
+        "verified": [_brief(prev[s]) for s in (prev_set - cur_set)],   # gone → fixed
+        "new": [_brief(cur[s]) for s in (cur_set - prev_set)],          # appeared this run
+        "still_open": [_brief(cur[s]) for s in (cur_set & prev_set)],   # persisted
+    }
+
+
 def recurring_findings(trace_root: str, min_sessions: int = 2) -> list[dict]:
     """Bugs that show up in `min_sessions`+ distinct sessions — likely real, not flaky."""
     groups: dict[str, dict] = {}

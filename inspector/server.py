@@ -162,6 +162,47 @@ def _live_sessions() -> dict:
     return {"sessions": out}
 
 
+def _rebuild_dashboard() -> None:
+    """Re-render the static dashboard so a status change shows up immediately."""
+    try:
+        from .dashboard import build_dashboard
+
+        build_dashboard(CONFIG.trace_root)
+    except Exception:
+        log.warning("dashboard rebuild failed", exc_info=True)
+
+
+def _devin_fix(signature: str) -> dict:
+    """Start a Devin fix for one ledger issue, then refresh the dashboard."""
+    from . import devin
+
+    out = devin.fix_with_devin(CONFIG, CONFIG.trace_root, signature)
+    if not out.get("error"):
+        _rebuild_dashboard()
+    return out
+
+
+def _devin_poll(devin_session_id: str) -> dict:
+    """Poll a Devin session; refresh the dashboard if a PR landed."""
+    from . import devin
+
+    out = devin.poll_devin(CONFIG, CONFIG.trace_root, devin_session_id)
+    if out.get("pr_url"):
+        _rebuild_dashboard()
+    return out
+
+
+def _dashboard_action(path: str, body: dict) -> dict:
+    """Dispatch dashboard POST /api/* actions (the Fix with Devin button)."""
+    if path == "/api/devin-fix":
+        sig = body.get("signature")
+        return _devin_fix(sig) if sig else {"error": "missing signature"}
+    if path == "/api/devin-status":
+        sid = body.get("devin_session_id") or body.get("session_id")
+        return _devin_poll(sid) if sid else {"error": "missing devin_session_id"}
+    return {"error": f"unknown action {path}"}
+
+
 def _dashboard_links(session_id: str | None = None) -> dict:
     """Rebuild + serve the dashboard, return a clickable localhost link for the run.
 
@@ -172,11 +213,22 @@ def _dashboard_links(session_id: str | None = None) -> dict:
         from .dashboard import serve as _serve
 
         _serve.set_live_provider(_live_sessions)  # power the live feed
+        _serve.set_action_handler(_dashboard_action)  # power the Fix with Devin button
         publish = _serve.publish
 
         links = publish(CONFIG.trace_root, session_id, CONFIG.dashboard_port)
         url = links.get("dashboard_url", "")
         links["view"] = f"✅ Test session complete. View what the agent surfaced → {url}"
+
+        # surface the fix-loop delta vs the previous run of this repo
+        from .dashboard.aggregate import latest_update
+        upd = latest_update(CONFIG.trace_root)
+        if upd.get("has_prev"):
+            fixed, new = len(upd.get("verified", [])), len(upd.get("new", []))
+            links["update"] = {"fixed_since_last_run": fixed, "new": new,
+                               "still_open": len(upd.get("still_open", []))}
+            if fixed or new:
+                links["view"] += f"  ·  {fixed} fixed since last run, {new} new (see Bug Ledger tab)"
         return links
     except Exception as exc:  # noqa: BLE001
         log.warning("dashboard publish failed", exc_info=True)
@@ -532,6 +584,45 @@ def fix_finding(session_id: str, finding_id: str) -> dict:
     }
 
 
+@mcp.tool(annotations=READ_ONLY)
+def bug_ledger() -> dict:
+    """Every unique issue across all runs with its CURRENT fix status — the fix loop, closed.
+
+    Status is evidence-based: an issue gone from a repo's latest run is `verified` (it no
+    longer reproduces = fixed); one still present is `open`. Also returns `update` — what
+    changed in the most recent run (fixed since last run / new / still-open). This is the
+    Bug Ledger tab on the dashboard: re-run after a fix and the issue flips to verified.
+    """
+    from .dashboard.aggregate import bug_ledger as _ledger
+    from .dashboard.aggregate import latest_update
+
+    ledger = _ledger(CONFIG.trace_root)
+    return {
+        "ledger": ledger,
+        "open": sum(1 for g in ledger if g.get("status") == "open"),
+        "verified": sum(1 for g in ledger if g.get("status") == "verified"),
+        "update": latest_update(CONFIG.trace_root),
+    }
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def fix_with_devin(signature: str) -> dict:
+    """Hand a Bug Ledger issue to Devin AI — it opens a PR with the fix.
+
+    Starts a Devin session (its API, capped by devin_max_acu), marks the issue
+    `fixing`, and returns the Devin session `devin_url`. Re-run `test_app` after the PR
+    merges and the issue auto-verifies (it no longer reproduces). Needs `DEVIN_API_KEY`.
+    `signature` comes from `bug_ledger()` / the dashboard row.
+    """
+    return _devin_fix(signature)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def devin_status(devin_session_id: str) -> dict:
+    """Poll a Devin fix session; if it opened a PR, record `pr_url` on the issue."""
+    return _devin_poll(devin_session_id)
+
+
 def _stop_and_replay(session_id: str) -> dict:
     """Persist the session, release the billed sandbox, then render the replay."""
     out: dict = {"ok": True}
@@ -883,7 +974,34 @@ def res_findings(sid: str) -> str:
 
 
 def main() -> None:
-    mcp.run()
+    """Run the MCP server. Defaults to stdio (Claude Code/Cursor); `--http` exposes it
+    over the network so a remote MCP client (e.g. Devin) can connect.
+
+        python -m inspector.server                 # stdio
+        python -m inspector.server --http          # http://127.0.0.1:8765/mcp
+        python -m inspector.server --http --host 0.0.0.0 --port 8765
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="inspector.server")
+    parser.add_argument("--transport", choices=["stdio", "http", "sse", "streamable-http"],
+                        default=None)
+    parser.add_argument("--http", action="store_true", help="shorthand for --transport http")
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--path", default=None)
+    args, _ = parser.parse_known_args()
+
+    transport = args.transport or ("http" if args.http else CONFIG.transport)
+    if transport == "stdio":
+        mcp.run()
+        return
+
+    host = args.host or CONFIG.http_host
+    port = args.port or CONFIG.http_port
+    path = args.path or CONFIG.http_path
+    log.info("Inspector MCP on %s http://%s:%s%s", transport, host, port, path)
+    mcp.run(transport=transport, host=host, port=port, path=path)
 
 
 if __name__ == "__main__":

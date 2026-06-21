@@ -121,14 +121,19 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
         steps += 1
 
     _run_dom_audit(session)  # deterministic evidence tier (web/electron; no-ops elsewhere)
-    findings = collect_findings(session)
+
+    # adversarially verify judgment findings: refute speculative ones before reporting.
+    from .verify import confirmed_findings, verify_findings
+    verdicts = verify_findings(session, driver)
+    findings = confirmed_findings(session)
     return {
         "goal": goal,
         "steps": steps,
         "stop_reason": stop_reason,
         "iterations": session.guard.iterations,
-        "findings": findings,
+        "findings": findings,             # confirmed only (dismissed kept in the trace)
         "findings_total": len(findings),
+        "verification": verdicts,         # {verified, dismissed, trusted}
         "missing_elements": len(missing),
         "history": history,
     }

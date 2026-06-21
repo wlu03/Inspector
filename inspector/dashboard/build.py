@@ -9,7 +9,13 @@ from __future__ import annotations
 import json
 import os
 
-from .aggregate import aggregate_stats, recurring_findings, scan_sessions
+from .aggregate import (
+    aggregate_stats,
+    bug_ledger,
+    latest_update,
+    recurring_findings,
+    scan_sessions,
+)
 from .render import render_index
 
 
@@ -43,13 +49,16 @@ def build_dashboard(trace_root: str | None = None, ensure_replays: bool = True) 
 
     stats = aggregate_stats(summaries)
     recurring = recurring_findings(trace_root)
+    ledger = bug_ledger(trace_root)
+    update = latest_update(trace_root)
 
     out = os.path.join(trace_root, "dashboard.html")
     with open(out, "w") as f:
-        f.write(render_index(summaries, stats, recurring))
+        f.write(render_index(summaries, stats, recurring, ledger=ledger, update=update))
 
     # machine-readable companion for programmatic consumers (CI, the MCP tools).
     with open(os.path.join(trace_root, "dashboard.json"), "w") as f:
-        json.dump({"stats": stats, "sessions": summaries, "recurring": recurring}, f, indent=2)
+        json.dump({"stats": stats, "sessions": summaries, "recurring": recurring,
+                   "ledger": ledger, "update": update}, f, indent=2)
 
     return out

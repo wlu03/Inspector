@@ -61,12 +61,16 @@ def test_android_extractor(tmp_path):
     src = (
         '<Button android:text="Save" />\n'
         '<Button android:text="@string/submit_form" />\n'
-        '<TextView android:contentDescription="Profile picture" />\n'
+        '<ImageButton android:contentDescription="Open menu" />\n'      # interactive -> kept
+        '<TextView android:contentDescription="Profile picture" />\n'   # decorative -> dropped
     )
     labels = _labels(tmp_path, "main.xml", src, Surface.ANDROID)
     assert "save" in labels
     assert "submit form" in labels        # @string/submit_form -> "submit form"
-    assert "profile picture" in labels
+    assert "open menu" in labels          # contentDescription on an interactive widget is kept
+    # a contentDescription on a non-interactive TextView must NOT become an expected
+    # affordance (the decorative-label false-positive the oracle was inflating).
+    assert "profile picture" not in labels
 
 
 def test_android_compose_extractor(tmp_path):

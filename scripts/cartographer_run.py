@@ -17,7 +17,7 @@ from inspector.session import SessionManager  # noqa: E402
 repo = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "examples/sample-buggy-counter")
 surface = Surface(sys.argv[2]) if len(sys.argv) > 2 else Surface.ELECTRON
 mgr = SessionManager(Config.from_env())
-session = mgr.create(repo, surface, "cartographer phase 0")
+session = mgr.create(repo, surface, "phase 0")
 print("launching", repo, flush=True)
 ready = session.launch()
 print("ready:", ready, flush=True)

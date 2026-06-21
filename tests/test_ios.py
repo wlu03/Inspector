@@ -121,7 +121,7 @@ def test_first_scheme():
 def test_idb_command_builders():
     assert idb_tap_cmd("idb", "UD", 10, 20) == "idb ui tap --udid UD 10 20"
     assert "idb ui text --udid UD" in idb_text_cmd("idb", "UD", "hi")
-    assert idb_swipe_cmd("idb", "UD", 1, 2, 3, 4) == "idb ui swipe --udid UD 1 2 3 4"
+    assert idb_swipe_cmd("idb", "UD", 1, 2, 3, 4) == "idb ui swipe --udid UD 1 2 3 4 --duration 0.3"
     assert idb_tap_cmd("/v/bin/idb", "UD", 1, 2) == "/v/bin/idb ui tap --udid UD 1 2"
 
 

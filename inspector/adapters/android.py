@@ -110,7 +110,8 @@ class AndroidAdapter(SurfaceAdapter):
             dist = 600 if action.direction != "up" else -600
             self.adb.shell(f"input swipe {cx} {cy} {cx} {cy - dist} 300")
         elif t == ActionType.DRAG:
-            self.adb.shell(f"input swipe {action.x} {action.y} {action.to_x} {action.to_y} 300")
+            if None not in (action.x, action.y, action.to_x, action.to_y):
+                self.adb.shell(f"input swipe {action.x} {action.y} {action.to_x} {action.to_y} 300")
         elif t == ActionType.WAIT:
             time.sleep(1.0)
 

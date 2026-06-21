@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import shlex
 import subprocess
+
+log = logging.getLogger("inspector")
 
 
 class AdbTransport:
@@ -39,7 +42,14 @@ class AdbTransport:
 
     # --- side-effecting wrappers ---
     def run(self, adb_args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
-        return subprocess.run(self.build_argv(adb_args), capture_output=True, timeout=timeout)
+        r = subprocess.run(self.build_argv(adb_args), capture_output=True, timeout=timeout)
+        # Surface real adb-level failures (device offline, no devices, transport error)
+        # so an empty result isn't silently read as "clean". A non-zero exit with NO
+        # stderr is a normal command result (e.g. `grep` finding no match) — not flagged.
+        if r.returncode != 0 and r.stderr.strip():
+            log.warning("adb %s failed (rc=%s): %s", adb_args[0], r.returncode,
+                        r.stderr.decode("utf-8", "replace").strip()[:200])
+        return r
 
     def shell(self, cmd: str, timeout: int = 60) -> str:
         return self.run(["shell", cmd], timeout).stdout.decode("utf-8", "replace")

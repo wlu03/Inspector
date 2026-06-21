@@ -29,16 +29,16 @@ class LoopGuard:
     def tick(self) -> None:
         self.iterations += 1
 
-    def observe_state(self, screenshot: bytes, logs: list[str]) -> None:
-        # Hash the SCREENSHOT only. Folding in logs defeats no-progress detection on
-        # apps that emit timestamped/heartbeat lines every tick — the screen is frozen
-        # but the digest keeps changing, so a stuck run never early-exits.
+    def observe_state(self, screenshot: bytes, signal: bool = False) -> None:
+        # Hash the SCREENSHOT only (folding in logs defeats no-progress on apps with
+        # heartbeat logs). `signal` = a fresh finding this step → counts as progress even
+        # if the screen is unchanged, so finding a bug doesn't trip the no-progress exit.
         digest = hashlib.sha256(screenshot).hexdigest()
-        if digest == self._last_hash:
-            self._repeat += 1
-        else:
+        if signal or digest != self._last_hash:
             self._repeat = 0
-            self._last_hash = digest
+        else:
+            self._repeat += 1
+        self._last_hash = digest
 
     def exhausted(self) -> str | None:
         """Return a stop reason if a guardrail tripped, else None."""

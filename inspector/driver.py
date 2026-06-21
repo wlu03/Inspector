@@ -218,6 +218,34 @@ def parse_verdict(text: str) -> dict:
     }
 
 
+# --- adversarial verification: try to REFUTE a flagged finding ---
+
+_REFUTE = (
+    "A UI tester flagged a possible bug in the app shown. Your job is to REFUTE it: "
+    "decide whether it is a REAL, reproducible defect or a FALSE POSITIVE (a benign log "
+    "line, expected behavior, the tester misreading the screen, or a non-issue). Be "
+    "skeptical — default to confirmed=false when uncertain or when there's no clear "
+    "evidence of breakage in the screenshot.\n\n"
+    "FLAGGED [{severity}]: {summary}\nexpected: {expected}\nactual: {actual}\n\n"
+    'Reply with ONLY JSON: {{"confirmed": true|false, "reason": "<one sentence>"}}'
+)
+
+
+def build_refute_prompt(finding: dict) -> str:
+    """Adversarial prompt asking the brain to refute a flagged finding. Pure."""
+    return _REFUTE.format(
+        severity=finding.get("severity", ""), summary=finding.get("summary", ""),
+        expected=finding.get("expected", ""), actual=finding.get("actual", ""),
+    )
+
+
+def parse_refute_verdict(text: str) -> dict:
+    """Parse the refute verdict. Pure. Defaults to NOT confirmed (skeptical)."""
+    obj = _extract_json_object(text) or {}
+    return {"confirmed": bool(obj.get("confirmed", False)),
+            "reason": _coerce_str(obj.get("reason")) or ""}
+
+
 # --- the live Replicate-backed driver ---
 
 class ReplicateDriver:
@@ -245,6 +273,9 @@ class ReplicateDriver:
 
     def judge_missing_element(self, candidate, rendered: list[str], screenshot: bytes) -> dict:
         return parse_verdict(self._run_model(screenshot, build_missing_judge_prompt(candidate, rendered)))
+
+    def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
+        return parse_refute_verdict(self._run_model(screenshot, build_refute_prompt(finding)))
 
     def _run_model(self, image_bytes: bytes, prompt: str) -> str:
         import replicate  # lazy
@@ -314,6 +345,10 @@ class HeuristicDriver:
         # no model to reason about conditional rendering → don't surface (avoid noise).
         return {"is_bug": False, "severity": "low", "reason": "heuristic mode — no brain to judge"}
 
+    def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
+        # no brain to refute → keep the finding as-is (don't silently drop evidence).
+        return {"confirmed": True, "reason": "heuristic mode — not verified"}
+
 
 def _is_degenerate(d: Decision) -> bool:
     """A primary decision that can't actually do anything → fall back to heuristic.
@@ -360,6 +395,9 @@ class FallbackDriver:
         # judgment needs the brain — delegate to the primary (VLM/Claude) driver.
         return self.primary.judge_missing_element(candidate, rendered, screenshot)
 
+    def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
+        return self.primary.verify_finding(finding, screenshot)
+
 
 class AnthropicDriver:
     """SoM-grounded Claude driver — the high-quality brain.
@@ -386,6 +424,9 @@ class AnthropicDriver:
 
     def judge_missing_element(self, candidate, rendered: list[str], screenshot: bytes) -> dict:
         return parse_verdict(self._run_model(screenshot, build_missing_judge_prompt(candidate, rendered)))
+
+    def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
+        return parse_refute_verdict(self._run_model(screenshot, build_refute_prompt(finding)))
 
     def _run_model(self, image_bytes: bytes, prompt: str) -> str:
         import base64

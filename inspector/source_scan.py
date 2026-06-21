@@ -148,8 +148,10 @@ def _extract_android(text: str):
         r"<(?:Button|ImageButton|TextView)\b[^>]*android:text=[\"']([^\"']+)[\"']", text, "button"
     ):
         yield _android_label(raw), kind, line
+    # contentDescription ONLY on interactive widgets — a decorative <ImageView
+    # contentDescription> shouldn't become an expected affordance the oracle hunts for.
     for raw, kind, line in _finditer(
-        r"android:contentDescription=[\"']([^\"']+)[\"']", text, "element"
+        r"<(?:Button|ImageButton)\b[^>]*android:contentDescription=[\"']([^\"']+)[\"']", text, "element"
     ):
         yield _android_label(raw), kind, line
     # Compose: Button/IconButton/TextButton { ... Text("Label") ... } via a small window

@@ -98,7 +98,24 @@ class LocalElectronAdapter(SurfaceAdapter):
 
     # --- perception / action ---
     def screenshot(self) -> bytes:
-        return self.cdp.screenshot() if self.cdp else b""
+        if not self.cdp:
+            return b""
+        raw = self.cdp.screenshot()
+        # Page.captureScreenshot is at devicePixelRatio (2x on Retina); downscale to the
+        # CSS viewport so screenshot px == screen_size() == Input.* coords — a
+        # screenshot-pixel-derived click then lands correctly (Retina-safe). #7.
+        try:
+            import io
+
+            from PIL import Image
+            img = Image.open(io.BytesIO(raw))
+            if img.size != self._viewport:
+                buf = io.BytesIO()
+                img.resize(self._viewport, Image.LANCZOS).save(buf, format="PNG")
+                return buf.getvalue()
+        except Exception:
+            pass
+        return raw
 
     def screen_size(self) -> tuple[int, int]:
         return self._viewport  # CSS px — matches the Input.* coordinate space

@@ -195,8 +195,9 @@ def idb_text_cmd(idb: str, udid: str, text: str) -> str:
     return f"{idb} ui text --udid {shlex.quote(udid)} {shlex.quote(text)}"
 
 
-def idb_swipe_cmd(idb: str, udid: str, x1: int, y1: int, x2: int, y2: int) -> str:
-    return f"{idb} ui swipe --udid {shlex.quote(udid)} {x1} {y1} {x2} {y2}"
+def idb_swipe_cmd(idb: str, udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) -> str:
+    # --duration makes the swipe a deterministic drag, not a momentum flick.
+    return f"{idb} ui swipe --udid {shlex.quote(udid)} {x1} {y1} {x2} {y2} --duration {duration}"
 
 
 def idb_key_cmd(idb: str, udid: str, code: int) -> str:
@@ -266,7 +267,11 @@ class IOSAdapter(SurfaceAdapter):
                 f"xcrun simctl install {self.udid} {shlex.quote(app_path)}", timeout=180,
             )
             self.bundle_id = self._bundle_id_of(app_path)
-            self._app_process = app_path.rsplit("/", 1)[-1].removesuffix(".app")
+            # process name = CFBundleExecutable (the .app dir name differs for RN /
+            # renamed / spaces-in-name apps, which would make the log predicate match
+            # nothing); fall back to the bundle basename if the plist read fails.
+            self._app_process = (self._app_executable(app_path)
+                                 or app_path.rsplit("/", 1)[-1].removesuffix(".app"))
             if self.bundle_id:
                 self.plane.run_sync(
                     f"xcrun simctl launch {self.udid} {shlex.quote(self.bundle_id)}", timeout=60,
@@ -406,6 +411,15 @@ class IOSAdapter(SurfaceAdapter):
         )
         bid = (r.stdout.strip() if r and r.stdout else "")
         return bid or None
+
+    def _app_executable(self, app_path: str) -> str | None:
+        """CFBundleExecutable — the actual process name `log stream` matches on."""
+        r = self.plane.run_sync(
+            f"plutil -extract CFBundleExecutable raw {shlex.quote(app_path)}/Info.plist 2>/dev/null",
+            timeout=30,
+        )
+        name = (r.stdout.strip() if r and r.stdout else "")
+        return name or None
 
     def _start_log_capture(self) -> None:
         # Scope the stream to the app's process — otherwise simctl streams the WHOLE

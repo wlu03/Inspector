@@ -9,7 +9,6 @@ to that session's existing `index.html` replay, so the whole thing works from
 from __future__ import annotations
 
 import html
-import json
 
 from ..theme import head_style
 
@@ -65,6 +64,25 @@ tbody tr.hl{background:rgba(21,199,141,.12);box-shadow:inset 3px 0 0 var(--green
 .live-card .g{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .live-card .meta2{color:var(--muted);font-family:var(--font-mono);font-size:12px;margin-left:auto;
   flex:0 0 auto}
+.tabs{display:flex;gap:4px;margin-top:36px;border-bottom:1px solid var(--border)}
+.tab{font-family:var(--font-mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;
+  background:none;border:none;border-bottom:2px solid transparent;color:var(--muted-2);
+  padding:10px 14px;cursor:pointer}
+.tab:hover{color:var(--fg)}
+.tab.active{color:var(--fg);border-bottom-color:var(--green)}
+.tab-badge{display:inline-block;margin-left:6px;background:var(--green);color:#111;border-radius:9px;
+  padding:0 7px;font-size:11px}
+.tabpane{margin-top:8px}
+.update{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0 26px}
+.ucard{flex:1 1 200px;min-width:180px;background:var(--surface);border:1px solid var(--border);padding:14px}
+.ucard .n{font-family:var(--font-serif);font-size:28px;line-height:1}
+.ucard.good{border-color:var(--green)} .ucard.good .n{color:var(--green)}
+.ucard.bad{border-color:var(--red)} .ucard.bad .n{color:var(--red)}
+.ucard ul{margin:8px 0 0;padding-left:16px;color:var(--muted);font-size:12px}
+.st{display:inline-block;font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;
+  padding:1px 7px;border:1px solid currentColor;border-radius:2px;text-transform:uppercase}
+.st-open{color:var(--red)} .st-verified{color:var(--green)}
+.st-fixed{color:var(--sev-medium)} .st-dismissed{color:var(--muted-2)}
 """
 
 
@@ -148,8 +166,80 @@ def _row(s: dict) -> str:
     )
 
 
-def render_index(summaries: list[dict], stats: dict, recurring: list[dict] | None = None) -> str:
+def _update_panel(update: dict) -> str:
+    """The 'what changed in the latest run' summary at the top of the Bug Ledger tab."""
+    if not update:
+        return ""
+
+    def _list(items):
+        if not items:
+            return ""
+        return "<ul>" + "".join(f"<li>{_e(i['summary'][:80])}</li>" for i in items[:6]) + "</ul>"
+
+    if not update.get("has_prev"):
+        new = update.get("new", [])
+        if not new:
+            return ""
+        return ("<div class='update'><div class='ucard bad'><div class='n'>" + str(len(new))
+                + "</div><div class='label'>issues found (first run)</div>" + _list(new)
+                + "</div></div>")
+
+    ver, new, op = update.get("verified", []), update.get("new", []), update.get("still_open", [])
+    return (
+        "<div class='update'>"
+        f"<div class='ucard good'><div class='n'>{len(ver)}</div>"
+        f"<div class='label'>fixed since last run</div>{_list(ver)}</div>"
+        f"<div class='ucard bad'><div class='n'>{len(new)}</div>"
+        f"<div class='label'>new this run</div>{_list(new)}</div>"
+        f"<div class='ucard'><div class='n'>{len(op)}</div>"
+        f"<div class='label'>still open</div>{_list(op)}</div>"
+        "</div>"
+    )
+
+
+def _fix_cell(g: dict) -> str:
+    """The 'fix' cell: a PR link, a live Devin link, or the Fix-with-Devin button.
+
+    The button is offered for ANY issue (open, verified, dismissed) so you can always
+    hand it to Devin.
+    """
+    pr, devin = g.get("pr_url"), g.get("devin_url")
+    if pr:
+        return f"<a class='replay-link' href='{_e(pr)}' target='_blank' rel='noopener'>PR ↗</a>"
+    if g.get("status") == "fixing" and devin:
+        return (f"<a class='replay-link' href='{_e(devin)}' target='_blank' rel='noopener'>"
+                "Devin working ↗</a>")
+    return (f"<button class='btn devin-btn' data-sig='{_e(g.get('signature', ''))}' "
+            "onclick='devinFix(this)'>Fix with Devin</button>")
+
+
+def _ledger_table(ledger: list[dict]) -> str:
+    """Every unique issue with its current evidence-based status + a Devin fix action."""
+    if not ledger:
+        return "<div class='empty'>No issues recorded yet.</div>"
+    rows = []
+    for g in ledger:
+        st = g.get("status", "open")
+        rows.append(
+            "<tr>"
+            f"<td><span class='st st-{_e(st)}'>{_e(st)}</span></td>"
+            f"<td><span class='sev-badge sev-{_e(g.get('severity', 'low'))}'>"
+            f"{_e(g.get('severity', ''))}</span></td>"
+            f"<td><div class='goal'>{_e(g.get('summary', ''))}</div>"
+            f"<div class='sub2'>{_e(g.get('suspected_area') or '')}</div></td>"
+            f"<td class='sub2'>{g.get('occurrences', 0)}× · {len(g.get('sessions', []))} runs</td>"
+            f"<td>{_fix_cell(g)}</td>"
+            "</tr>"
+        )
+    return ("<table><thead><tr><th>status</th><th>severity</th><th>issue</th><th>seen</th>"
+            "<th>fix</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
+
+
+def render_index(summaries: list[dict], stats: dict, recurring: list[dict] | None = None,
+                 ledger: list[dict] | None = None, update: dict | None = None) -> str:
     recurring = recurring or []
+    ledger = ledger or []
+    update = update or {}
     sev = stats.get("by_severity", {})
     pass_rate = stats.get("pass_rate")
     pass_rate_txt = f"{pass_rate}%" if pass_rate is not None else "—"
@@ -181,8 +271,18 @@ def render_index(summaries: list[dict], stats: dict, recurring: list[dict] | Non
     p.append("<div id='live' class='live-wrap'><span class='label'>// Running now</span>"
              "<div id='live-cards' style='margin-top:12px'></div></div>")
 
-    p.append(_recurring_panel(recurring))
+    # tabs: Runs (history) + Bug Ledger (per-issue fix status). The ledger badge shows
+    # how many issues are still open so the update is surfaced at the top.
+    open_count = sum(1 for g in ledger if g.get("status") == "open")
+    badge = f" <span class='tab-badge'>{open_count}</span>" if open_count else ""
+    p.append("<div class='tabs'>"
+             "<button class='tab active' data-tab='runs' onclick=\"showTab('runs')\">Runs</button>"
+             "<button class='tab' data-tab='ledger' onclick=\"showTab('ledger')\">"
+             "Bug Ledger" + badge + "</button></div>")
 
+    # --- Runs tab ---
+    p.append("<div id='tab-runs' class='tabpane'>")
+    p.append(_recurring_panel(recurring))
     p.append("<div class='section'><span class='label'>// Runs</span>")
     if summaries:
         p.append("<div class='toolbar'>"
@@ -204,7 +304,15 @@ def render_index(summaries: list[dict], stats: dict, recurring: list[dict] | Non
     else:
         p.append("<div class='empty'>No sessions yet. Run <span class='mono accent'>test_app</span> "
                  "or a <span class='mono accent'>run_test_session</span> loop, then rebuild the dashboard.</div>")
-    p.append("</div>")
+    p.append("</div></div>")  # /section /tab-runs
+
+    # --- Bug Ledger tab: what changed in the latest run + every issue's status ---
+    p.append("<div id='tab-ledger' class='tabpane' style='display:none'>")
+    p.append("<div class='section'><span class='label'>// What changed in the latest run</span>")
+    p.append(_update_panel(update) or "<div class='empty'>No prior run to compare yet.</div>")
+    p.append("</div><div class='section'><span class='label'>// All issues · current status</span>")
+    p.append(_ledger_table(ledger))
+    p.append("</div></div>")  # /section /tab-ledger
 
     p.append("<div class='foot'>generated by inspector.dashboard · static aggregator over "
              "~/.inspector/sessions</div>")
@@ -237,6 +345,42 @@ function toggleFail(){
   localStorage.setItem('insp_fail', failOnly ? '1' : '0');
   applyFailStyle();
   flt();
+}
+
+// Fix with Devin: POST the issue signature, then poll for the PR (capped at 10 min)
+async function devinFix(btn){
+  const sig = btn.dataset.sig;
+  btn.disabled = true; btn.textContent = 'starting Devin…';
+  try{
+    const r = await fetch('api/devin-fix', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({signature: sig})});
+    const j = await r.json();
+    if(j.error){ btn.textContent = 'error: ' + j.error; btn.disabled = false; return; }
+    btn.outerHTML = "<a class='replay-link' href='" + j.devin_url +
+      "' target='_blank' rel='noopener'>Devin working ↗</a>";
+    if(j.devin_session_id) pollDevin(j.devin_session_id, 0);
+  }catch(e){ btn.textContent = 'error'; btn.disabled = false; }
+}
+function pollDevin(sid, tries){
+  if(tries > 40) return;  // 40 × 15s = 10 min cap
+  setTimeout(async () => {
+    try{
+      const r = await fetch('api/devin-status', {method:'POST',
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify({devin_session_id: sid})});
+      const j = await r.json();
+      if(j.pr_url){ location.reload(); return; }  // PR landed → rebuilt dashboard shows it
+    }catch(e){}
+    pollDevin(sid, tries + 1);
+  }, 15000);
+}
+
+// tabs: Runs / Bug Ledger
+function showTab(name){
+  document.querySelectorAll('.tabpane').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  const pane = document.getElementById('tab-' + name); if(pane) pane.style.display = '';
+  const tab = document.querySelector(".tab[data-tab='" + name + "']"); if(tab) tab.classList.add('active');
+  localStorage.setItem('insp_tab', name);
 }
 
 // click a column header to sort; click again to reverse
@@ -351,6 +495,8 @@ async function pollNew(){
 setInterval(pollNew, 10000);
 
 document.addEventListener('DOMContentLoaded', () => {
+  const tab = (location.hash === '#ledger') ? 'ledger' : (localStorage.getItem('insp_tab') || 'runs');
+  showTab(tab);
   restoreFilters(); highlightHash(); tickTimes(); pollLive();
 });
 """

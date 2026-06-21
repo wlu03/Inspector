@@ -136,6 +136,22 @@ class Config:
     # run finishes — nobody's watching the chat. Best-effort; set 0 to disable.
     notify: bool = True
 
+    # Devin AI auto-fix: the "Fix with Devin" button on the Bug Ledger hands a finding
+    # to Devin's API, which opens a PR. Needs a key (DEVIN_API_KEY, apk_*). max_acu and
+    # the 10-minute poll cap bound cost/time per fix.
+    devin_api_key: str | None = None
+    devin_base_url: str = "https://api.devin.ai"
+    devin_max_acu: int | None = None
+    devin_poll_timeout_s: int = 600  # cap waiting on Devin at 10 minutes
+
+    # MCP transport. "stdio" (default, for Claude Code/Cursor) or "http"/"sse" so a
+    # REMOTE client (e.g. Devin, via its MCP marketplace) can reach Inspector over the
+    # network. HTTP binds host:port/path; expose it with a tunnel for cloud clients.
+    transport: str = "stdio"
+    http_host: str = "127.0.0.1"
+    http_port: int = 8765
+    http_path: str = "/mcp"
+
     @classmethod
     def from_env(cls) -> "Config":
         _load_dotenv()
@@ -168,4 +184,12 @@ class Config:
             dashboard_port=int(_env("INSPECTOR_DASHBOARD_PORT", "LOOPBACK_DASHBOARD_PORT", default="7321") or "7321"),
             heartbeat_screenshot_s=float(_env("INSPECTOR_HEARTBEAT_S", "LOOPBACK_HEARTBEAT_S", default="5") or "5"),
             notify=(_env("INSPECTOR_NOTIFY", "LOOPBACK_NOTIFY", default="1") or "1") not in ("0", "false", "no", ""),
+            devin_api_key=os.getenv("DEVIN_API_KEY"),
+            devin_base_url=_env("INSPECTOR_DEVIN_URL", default="https://api.devin.ai") or "https://api.devin.ai",
+            devin_max_acu=int(_env("INSPECTOR_DEVIN_MAX_ACU") or "0") or None,
+            devin_poll_timeout_s=int(_env("INSPECTOR_DEVIN_TIMEOUT", default="600") or "600"),
+            transport=_env("INSPECTOR_TRANSPORT", default="stdio") or "stdio",
+            http_host=_env("INSPECTOR_HTTP_HOST", default="127.0.0.1") or "127.0.0.1",
+            http_port=int(_env("INSPECTOR_HTTP_PORT", default="8765") or "8765"),
+            http_path=_env("INSPECTOR_HTTP_PATH", default="/mcp") or "/mcp",
         )

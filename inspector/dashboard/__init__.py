@@ -14,8 +14,10 @@ from .build import build_dashboard
 from .serve import ensure_server, publish
 from .aggregate import (
     aggregate_stats,
+    bug_ledger,
     collect_all_findings,
     fix_prompt,
+    latest_update,
     load_session_detail,
     recurring_findings,
     scan_sessions,
@@ -30,5 +32,7 @@ __all__ = [
     "aggregate_stats",
     "collect_all_findings",
     "recurring_findings",
+    "bug_ledger",
+    "latest_update",
     "fix_prompt",
 ]
