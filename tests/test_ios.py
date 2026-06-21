@@ -243,3 +243,16 @@ def test_ios_adapter_local_vs_vm():
 
 def test_execution_defaults_local():
     assert Config().execution == "local"
+
+
+def test_all_iphone_udids_pool_for_fleet():
+    import json as _json
+
+    from inspector.adapters.ios import all_iphone_udids, first_iphone_udid
+    j = _json.dumps({"devices": {"rt": [
+        {"name": "iPhone 15", "udid": "A", "isAvailable": True},
+        {"name": "iPad Pro", "udid": "B", "isAvailable": True},
+        {"name": "iPhone 16", "udid": "C", "isAvailable": True},
+    ]}})
+    assert all_iphone_udids(j) == ["A", "C"]   # iPads excluded, order kept
+    assert first_iphone_udid(j) == "A"

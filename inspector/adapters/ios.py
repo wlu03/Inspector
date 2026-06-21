@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import threading
 
 from ..config import Config
 from ..models import ActionType, Element, Surface
@@ -96,15 +97,29 @@ def parse_screen_points(describe_json: str) -> tuple[int, int]:
 
 def first_iphone_udid(list_devices_json: str) -> str | None:
     """First available iPhone simulator UDID from `simctl list devices available -j`."""
+    return (all_iphone_udids(list_devices_json) or [None])[0]
+
+
+def all_iphone_udids(list_devices_json: str) -> list[str]:
+    """All available iPhone simulator UDIDs (ordered). Pure — the pool a parallel fleet
+    draws distinct devices from so agents don't collide on one simulator."""
+    out: list[str] = []
     try:
         data = json.loads(list_devices_json)
         for _runtime, devices in (data.get("devices") or {}).items():
             for dev in devices:
                 if dev.get("isAvailable", True) and "iPhone" in (dev.get("name") or ""):
-                    return dev.get("udid")
+                    if dev.get("udid"):
+                        out.append(dev["udid"])
     except Exception:
         pass
-    return None
+    return out
+
+
+# Distinct simulators handed out one-per-agent so a parallel/multi-agent run boots a
+# FLEET of simulators instead of colliding on the first available one (thread-safe).
+_sim_lock = threading.Lock()
+_sim_claimed: set[str] = set()
 
 
 def _frame_of(node: dict) -> tuple[float, float, float, float] | None:
@@ -404,18 +419,33 @@ class IOSAdapter(SurfaceAdapter):
     def teardown(self) -> None:
         if self.udid:
             self.plane.run_sync(f"xcrun simctl shutdown {self.udid} 2>/dev/null || true", timeout=30)
+            with _sim_lock:
+                _sim_claimed.discard(self.udid)   # return it to the pool
         self.plane.stop()
 
     # --- helpers ---
+    def _claim_udid(self) -> str | None:
+        """Claim a simulator no other agent in this process is using, so a parallel run
+        boots a FLEET. Creates a fresh sim if the available pool is exhausted."""
+        with _sim_lock:
+            r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
+            for u in all_iphone_udids(r.stdout if r and r.stdout else ""):
+                if u not in _sim_claimed:
+                    _sim_claimed.add(u)
+                    return u
+            # pool exhausted → create a dedicated sim for this agent
+            name = f"Inspector-{len(_sim_claimed)}"
+            self.plane.run_sync(f'xcrun simctl create "{name}" "iPhone 15" 2>/dev/null || true', timeout=60)
+            r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
+            for u in all_iphone_udids(r.stdout if r and r.stdout else ""):
+                if u not in _sim_claimed:
+                    _sim_claimed.add(u)
+                    return u
+        return None
+
     def _ensure_device(self) -> None:
         if not self.udid:
-            r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
-            udid = first_iphone_udid(r.stdout if r and r.stdout else "")
-            if not udid:
-                self.plane.run_sync('xcrun simctl create Inspector "iPhone 15" 2>/dev/null || true', timeout=60)
-                r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
-                udid = first_iphone_udid(r.stdout if r and r.stdout else "")
-            self.udid = udid
+            self.udid = self._claim_udid()
         if self.udid:
             self.plane.run_sync(f"xcrun simctl boot {self.udid} 2>/dev/null || true", timeout=120)
             # Demo mode: pop the Simulator window so you can WATCH the app being driven.
