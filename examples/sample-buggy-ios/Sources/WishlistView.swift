@@ -38,6 +38,11 @@ struct WishlistView: View {
             Section("Add a wish") {
                 TextField("Item name", text: $app.newItemName)
                     .accessibilityIdentifier("settings.name.field")
+                    .onChange(of: app.newItemName) { _, newValue in
+                        if newValue.count > 30 {
+                            app.newItemName = String(newValue.prefix(30))
+                        }
+                    }
 
                 // BUG-03: off-by-one, but max(0,…) keeps the empty case at "0/30"
                 // so there is no first-paint giveaway — only typing exposes it.
