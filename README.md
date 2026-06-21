@@ -1,6 +1,6 @@
 # Inspector
 
-# cartographer-and-native-surfaces branch contains the final code
+# `cartographer-and-native-surfaces` branch contains the final code
 
 **An MCP server that lets a coding agent see, operate, and test the app it just built — across web, Electron, Android, and iOS — and feed structured, reproducible findings back so it can fix issues autonomously.**
 
