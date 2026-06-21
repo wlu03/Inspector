@@ -35,10 +35,11 @@ def test_native_build_command():
     assert android_build_commands("native") == ["./gradlew assembleDebug"]
 
 
-def test_react_native_prebuilds_then_assembles():
+def test_react_native_installs_prebuilds_then_assembles():
     cmds = android_build_commands("react-native")
-    assert "expo prebuild -p android" in cmds[0]
-    assert "gradlew assembleDebug" in cmds[1]
+    assert cmds[0] == "npm install"
+    assert any("expo prebuild -p android" in c for c in cmds)
+    assert any("gradlew assembleDebug" in c for c in cmds)
 
 
 def test_flutter_build_command():

@@ -36,8 +36,10 @@ def android_build_commands(framework: str) -> list[str]:
     if framework == "flutter":
         return ["flutter build apk --debug"]
     if framework == "react-native":
-        # Expo projects have no android/ until prebuild; bare RN already does (|| true).
+        # install deps first (a fresh repo has no node_modules); Expo projects have no
+        # android/ until prebuild generates it; bare RN already does (|| true).
         return [
+            "npm install",
             "npx expo prebuild -p android --no-install || true",
             "cd android && ./gradlew assembleDebug",
         ]
