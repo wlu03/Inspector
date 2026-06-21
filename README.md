@@ -6,6 +6,66 @@ Inspector plugs into Claude Code, Cursor, or any MCP-compatible coding agent. It
 
 ---
 
+## Why Inspector exists — the gap in today's tooling
+
+A coding agent can write a UI but can't *see* whether it works. The existing ways to give it eyes each break down in a specific, structural way. Inspector is built to keep what each does well and fix what it doesn't.
+
+### 1. Raw computer-use (Claude computer-use driving a screen)
+
+The model takes a screenshot and emits raw `(x, y)` coordinates. Powerful and universal, but:
+
+- **Imprecise grounding.** Clicking by guessed pixel coordinates misfires on dense layouts, small targets, and scaled/retina displays — the single biggest source of "the agent clicked the wrong thing."
+- **Pixels only, no structured evidence.** It can't read the DOM, the accessibility tree, console errors, failed network requests, or run axe-core. "Looks fine" is a vision *guess*, never a deterministic pass/fail.
+- **Slow and token-heavy.** Every step is full-screenshot → model → action; multi-step flows burn image tokens and wall-clock.
+- **Non-reproducible.** Vision-driven clicks vary run to run; there's no clean repro trail or replay, so a failure rarely becomes a regression test.
+- **Unsafe by default.** It drives the *real* desktop unless you build the isolation, launch orchestration, and teardown yourself.
+- **Confirmatory bias.** Asked to "check the app," a general agent tends to confirm it works rather than try to break it.
+
+### 2. Browser-based computer-use (cloud-browser agents)
+
+Same coordinate/heuristic fragility as above, plus:
+
+- **Web-only.** Bound to a browser — blind to native Android/iOS, Electron desktop chrome, OS dialogs, and file pickers.
+- **No source link.** A bug it sees can't be tied back to `file:line` in your repo.
+- **Hosted/opaque.** You usually don't control the environment, determinism, or data egress.
+
+### 3. Playwright-class systems (Playwright MCP, Browserbase ui-test, Stagehand, Appium-style)
+
+These give the deterministic rigor computer-use lacks — and ui-test in particular has an excellent adversarial methodology we deliberately borrow from — but they're structurally constrained:
+
+- **CDP/browser-bound.** Playwright speaks the Chrome DevTools Protocol: it drives web and the Electron renderer only. **Native mobile means switching tools entirely** (Appium/XCUITest/Espresso) — different selectors, different infra, no single loop across surfaces.
+- **Selector-bound, so blind spots.** It tests the *DOM*, not the rendered pixels: canvas/WebGL, charts, maps, games, `<iframe>`/shadow-DOM content are opaque, and selectors break on markup churn.
+- **DOM-present ≠ user-visible.** A button that exists in the DOM but is clipped, z-index-hidden, off-screen, or invisibly low-contrast can *pass* DOM assertions while being broken to a human. It validates the document, not the experience.
+- **An executor, not a brain.** It runs scripts; deciding what to test and adapting mid-run is a layer you add on top, and mapping a runtime failure to your source isn't built in.
+
+### How Inspector closes the gap
+
+Inspector keeps computer-use's **universality** and Playwright's **deterministic rigor**, driven by a frontier coding agent as the **brain**, inside isolated **VMs**, producing **reproducible, source-linked** findings — and it's **adversarial by default**:
+
+- **One loop, every surface.** A single `SurfaceAdapter` interface runs the same observe→act→verify loop on web, Electron, Android, and iOS. Pixel-level computer-use reaches canvas/WebGL/native that DOM selectors can't.
+- **Grounding-by-ID, not raw coordinates.** Cheap element detection (OmniParser) renders a **Set-of-Mark** screenshot — numbered boxes over interactive elements. The host agent picks an *id*; Inspector maps it to coordinates and clicks. This removes the misclick failure mode of coordinate-guessing.
+- **Hybrid evidence — pixels *and* a deterministic channel.** `audit_dom` injects **axe-core** over CDP and reads structured facts straight off the live DOM (WCAG violations, broken images via `naturalWidth=0`, unlabeled inputs), alongside a console/exception log-tap — recovering Playwright/ui-test's strongest evidence tier *where a DOM exists*, while vision still catches the visual breakage the DOM can't show. Best of both, not either/or.
+- **Source-linked findings.** A source scan + missing-element oracle ties a runtime absence back to `file:line`, and every finding carries a repro trail — so the agent can go straight to the fix.
+- **Adversarial by design.** Three-round planning (functional → adversarial → coverage) and a per-feature attack catalog push edge inputs (empty/XSS/overflow/unicode), rapid double-submit, Escape/keyboard nav, bogus routes, and mobile-viewport overflow. The mandate is *try to break it, not confirm it works.*
+- **Isolated, with lifecycle.** Apps run in VMs (E2B) with launch/readiness orchestration, an idle reaper, and teardown — safe by construction, no real desktop at risk.
+- **Reproducible & fix-closing.** Every run writes a trace (frames + `actions.jsonl` + logs) → replay (HTML + video), and findings move `open → fixed → verified` so a vision-found failure becomes a re-runnable check.
+- **Lean brain/hands split.** The host frontier agent is the brain (no GPU-hosted model to run), and a host-token-cost mode caps full images per session to control the per-step cost that plagues raw computer-use.
+
+| | Raw computer-use | Browser computer-use | Playwright-class | **Inspector** |
+|---|:--:|:--:|:--:|:--:|
+| Web | ✅ | ✅ | ✅ | ✅ |
+| Electron / native mobile | ⚠️ ad-hoc | ❌ | ❌ (separate tools) | ✅ one loop |
+| Canvas / WebGL / pixel-only UI | ✅ | ✅ | ❌ | ✅ |
+| Deterministic checks (axe, console, images) | ❌ | ❌ | ✅ | ✅ |
+| Sees visual breakage (clipped/hidden/contrast) | ✅ | ✅ | ❌ | ✅ |
+| Precise grounding | ❌ coords | ❌ coords | ✅ selectors | ✅ by-ID |
+| Source-linked findings (`file:line`) | ❌ | ❌ | ❌ | ✅ |
+| Reproducible trace + replay | ❌ | ❌ | ✅ | ✅ |
+| Adversarial by default | ❌ | ❌ | ⚠️ if scripted | ✅ |
+| Isolated sandbox + lifecycle | ❌ DIY | ⚠️ hosted | ⚠️ varies | ✅ |
+
+---
+
 ## The three load-bearing theses
 
 1. **Computer-use is the universal interaction layer.** Not Playwright (CDP/browser-bound, blind to native mobile). One pixel-level loop works on anything that opens on a screen.
@@ -40,7 +100,7 @@ Inspector plugs into Claude Code, Cursor, or any MCP-compatible coding agent. It
 
 ## Status
 
-**Planning.** No code yet.
+**Building.** Web surface is end-to-end live-proven; pure-Python core, 13+ MCP tools, deterministic `audit_dom`, adversarial planning, and findings/replay are wired (100+ unit tests). Electron is one refactor out; Android/iOS adapters are interface skeletons. See [BUILD_PLAN.md](BUILD_PLAN.md) for the authoritative status.
 
 **Scope (decided):** build **all four surfaces** (Web, Electron, Android, iOS) as a **personal/dev tool** — not productionizing yet (no hosting, payments, or hosted dashboard). Signups + build checklist for this scope: [12 — Accounts & Services](docs/12-accounts-and-services.md). Bring runtimes online web → Electron → Android → iOS (infra-readiness order; all four in scope).
 

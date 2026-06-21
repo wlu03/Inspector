@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 
 from . import detection
@@ -20,13 +21,20 @@ class Session:
     def __init__(self, repo_path: str, surface: Surface, config: Config, goal: str = ""):
         self.config = config
         self.record = SessionRecord(repo_path=repo_path, surface=surface, goal=goal)
-        self.adapter: SurfaceAdapter = get_adapter(surface, config)
+        self.adapter: SurfaceAdapter = get_adapter(surface, config, repo_path=repo_path)
         self.detector = OmniParserDetector(config)
         self.trace = TraceRecorder(config.trace_root, self.record.id)
         self.guard = LoopGuard(config.max_iterations, config.max_wall_clock_s)
         self.last_elements: list[Element] = []
         self.action_seq = 0
         self.plan = None  # TestPlan, set via the set_plan tool
+        self.action_log: list[str] = []  # human-readable steps, used for repro
+        self._seen_findings: set[str] = set()  # de-dup signatures
+        self.created_at = time.monotonic()
+        self.touched_at = self.created_at  # last activity, for the reaper
+        self._verified_count = 0  # findings total at last verify(), to scope the signal
+        self.images_returned = 0  # full SoM PNGs returned at the MCP boundary (cost cap)
+        self._launch_error: str | None = None  # set by an async (background) launch
 
     # --- lifecycle ---
     def launch(self, dev_command: str | None = None) -> bool:
@@ -65,8 +73,21 @@ class Session:
             except Exception:
                 pass
 
+    def touch(self) -> None:
+        """Record recent activity so the reaper won't collect a live session."""
+        self.touched_at = time.monotonic()
+
+    def image_allowed(self) -> bool:
+        """Whether to return a full SoM image now, honoring the per-session cap."""
+        cap = self.config.max_images_per_session
+        if cap and self.images_returned >= cap:
+            return False
+        self.images_returned += 1
+        return True
+
     # --- the loop ---
     def observe(self) -> tuple[bytes, list[Element], list[str]]:
+        self.touch()
         self._keepalive()
         self.record.state = SessionState.INTERACTING
         png = self.adapter.screenshot()
@@ -87,8 +108,10 @@ class Session:
         key: str | None = None,
         coords: list[int] | None = None,
     ) -> tuple[bytes, bool, list[str]]:
+        self.touch()
         self.guard.tick()
         self._keepalive()
+        self.action_log.append(self._describe_action(action_type, target_id, text, key))
         before = self.adapter.screenshot()
         frame_before = self.trace.save_frame(before)
 
@@ -127,6 +150,36 @@ class Session:
         som = render_set_of_mark(after, elements)
         return som, changed, logs
 
+    def audit(self) -> tuple[dict, list[str]]:
+        """Run the deterministic DOM audit and ingest any issues as Findings.
+
+        The strongest evidence tier: structured facts from the live DOM (axe-core
+        WCAG violations, broken images, unlabeled inputs), de-duped against findings
+        already seen this session. Returns (raw audit dict, ids of new findings).
+        No-ops to ({}, []) on surfaces without a DOM.
+        """
+        from .audit import audit_to_findings
+
+        self.touch()
+        try:
+            audit = self.adapter.audit_dom()
+        except Exception:
+            audit = {}
+        new_ids: list[str] = []
+        for finding in audit_to_findings(
+            audit, session_id=self.record.id, trace_id=self.record.trace_id
+        ):
+            sig = detection.finding_signature(finding)
+            if sig in self._seen_findings:
+                continue  # de-dup against the log tap + earlier audits
+            self._seen_findings.add(sig)
+            if not finding.repro:
+                finding.repro = self.action_log[-4:] or ["deterministic DOM audit"]
+            self.trace.save_finding(finding)
+            self.record.findings.append(finding.id)
+            new_ids.append(finding.id)
+        return audit, new_ids
+
     # --- helpers ---
     def _resolve(
         self, action_type: ActionType, target_id: int | None,
@@ -148,38 +201,113 @@ class Session:
             return InputAction(action_type, x=cx, y=cy, text=text, key=key)
         return InputAction(action_type, text=text, key=key)
 
+    @staticmethod
+    def _label_of(elements: list[Element], target_id: int | None) -> str:
+        el = next((e for e in elements if e.id == target_id), None)
+        return (el.label.strip() if el and el.label else "")
+
+    def _describe_action(
+        self, action_type: ActionType, target_id: int | None,
+        text: str | None, key: str | None,
+    ) -> str:
+        if action_type == ActionType.TYPE:
+            return f"type {text!r}"
+        if action_type == ActionType.KEY:
+            return f"press {key!r}"
+        verb = action_type.value.replace("_", " ")
+        if target_id is not None:
+            label = self._label_of(self.last_elements, target_id)
+            return f"{verb} element #{target_id}" + (f" ({label})" if label else "")
+        return verb
+
     def _ingest_findings(self, logs: list[str]) -> None:
         for finding in detection.scan_logs(logs, self.record.id, self.record.trace_id):
+            sig = detection.finding_signature(finding)
+            if sig in self._seen_findings:
+                continue  # de-dup repeats across observe/act calls
+            self._seen_findings.add(sig)
+            if not finding.repro:
+                finding.repro = self.action_log[-4:] or ["(observed without prior actions)"]
             self.trace.save_finding(finding)
             self.record.findings.append(finding.id)
 
 
 class SessionManager:
-    """Owns all live sessions for the server process."""
+    """Owns all live sessions for the server process.
+
+    Thread-safe (FastMCP serves tools from a threadpool) and runs a daemon reaper
+    that tears down sessions idle past `session_idle_ttl_s` or older than
+    `sandbox_timeout_s` — so a host that crashes or forgets `stop()` can't leak a
+    billed sandbox.
+    """
 
     def __init__(self, config: Config):
         self.config = config
         self.sessions: dict[str, Session] = {}
+        self._lock = threading.RLock()
+        self._reaper: threading.Thread | None = None
 
     def create(self, repo_path: str, surface: Surface | None = None, goal: str = "") -> Session:
         if surface is None:
             surface = detect_project(repo_path).surface
         session = Session(repo_path, surface, self.config, goal)
-        self.sessions[session.record.id] = session
+        with self._lock:
+            self.sessions[session.record.id] = session
+        self._ensure_reaper()
         return session
 
     def get(self, session_id: str) -> Session:
-        if session_id not in self.sessions:
+        with self._lock:
+            session = self.sessions.get(session_id)
+        if session is None:
             raise KeyError(f"no session {session_id!r}")
-        return self.sessions[session_id]
+        session.touch()  # a tool call is activity — keep it off the reaper's list
+        return session
 
     def stop(self, session_id: str) -> None:
-        session = self.sessions.get(session_id)
+        with self._lock:
+            session = self.sessions.get(session_id)
         if session is None:
             return
-        # tear down first (release the billed sandbox); only then drop the handle,
-        # so a flaky teardown can be retried instead of orphaning the sandbox.
+        # tear down OUTSIDE the lock (it can block on the network) — release the
+        # billed sandbox first, then drop the handle so a flaky teardown can retry.
         try:
             session.teardown()
         finally:
-            self.sessions.pop(session_id, None)
+            with self._lock:
+                self.sessions.pop(session_id, None)
+
+    # --- reaper ---
+    def reap(self, now: float) -> list[str]:
+        """Stop sessions idle past the TTL, or older than the sandbox lifetime.
+
+        Takes `now` (a monotonic timestamp) so it's unit-testable without the
+        background thread. Returns the ids it tore down.
+        """
+        ttl = self.config.session_idle_ttl_s
+        max_age = self.config.sandbox_timeout_s
+        stale: list[str] = []
+        with self._lock:
+            for sid, s in list(self.sessions.items()):
+                idle = now - s.touched_at
+                age = now - s.created_at
+                if (ttl > 0 and idle > ttl) or (max_age > 0 and age > max_age):
+                    stale.append(sid)
+        for sid in stale:
+            self.stop(sid)  # acquires the lock itself
+        return stale
+
+    def _ensure_reaper(self) -> None:
+        if self._reaper is not None or self.config.session_idle_ttl_s <= 0:
+            return
+        t = threading.Thread(target=self._reaper_loop, name="inspector-reaper", daemon=True)
+        self._reaper = t
+        t.start()
+
+    def _reaper_loop(self) -> None:
+        while True:
+            time.sleep(max(self.config.reaper_interval_s, 1))
+            try:
+                self.reap(time.monotonic())
+            except Exception:
+                pass

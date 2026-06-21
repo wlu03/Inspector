@@ -21,7 +21,7 @@ const TARGET_CY = 334;
 
 type Phase = "idle" | "boxes" | "cursor" | "click" | "finding";
 
-export default function LoopViz() {
+export default function InspectorViz() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [visibleCount, setVisibleCount] = useState(0);
   const [cursorX, setCursorX] = useState(500);

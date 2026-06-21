@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from ..config import Config
 from ..models import ActionType
 from ..sandbox import E2BSandbox
@@ -37,6 +39,11 @@ class DesktopAdapter(SurfaceAdapter):
         elif t == ActionType.DOUBLE_CLICK:
             self.sandbox.double_click(action.x, action.y)
         elif t == ActionType.TYPE:
+            # focus the target field first — typing without focus drops the keystrokes,
+            # so form inputs never fill and form-dependent bugs never trigger.
+            if action.x is not None and action.y is not None:
+                self.sandbox.left_click(action.x, action.y)
+                time.sleep(0.15)
             self.sandbox.write(action.text or "")
         elif t == ActionType.KEY:
             self.sandbox.press(action.key or "")

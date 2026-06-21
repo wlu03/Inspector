@@ -51,6 +51,26 @@ class SurfaceAdapter(ABC):
     def logs(self) -> list[str]:
         """Return new log lines since the previous call (crash/error signal)."""
 
+    def rendered_elements(self) -> list[str]:
+        """Labels/text of the interactive elements ACTUALLY rendered right now.
+
+        The per-surface hook for the code-aware "missing element" oracle: the core
+        diffs these against what the source code declares, so it can surface an
+        element that was supposed to appear but didn't. Web/Electron read the live
+        DOM (CDP); Android/iOS read the accessibility tree. Not abstract — a surface
+        that can't enumerate yet inherits this empty default (oracle just no-ops).
+        """
+        return []
+
+    def audit_dom(self) -> dict:
+        """Deterministic DOM audit: axe-core violations, broken images, unlabeled inputs.
+
+        The per-surface hook for the strongest evidence tier (structured facts, not
+        vision judgments). Web/Electron run it over CDP; surfaces without a DOM
+        inherit this empty default (the audit just no-ops).
+        """
+        return {}
+
     @abstractmethod
     def screen_size(self) -> tuple[int, int]:
         """Return (width, height) in pixels — used to map bbox ratios to clicks."""

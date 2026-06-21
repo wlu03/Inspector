@@ -24,5 +24,5 @@ Next, inside the VM:
   xcodebuild -downloadPlatform iOS              # iOS Simulator runtime (~7GB)
   brew install idb-companion && pip3 install fb-idb
 
-Then set LOOPBACK_MACOS_HOST=$IP for the iOS adapter.
+Then set INSPECTOR_MACOS_HOST=$IP for the iOS adapter.
 EOF

@@ -41,6 +41,14 @@ class AndroidAdapter(SurfaceAdapter):
     def logs(self) -> list[str]:
         raise NotImplementedError("AndroidAdapter.logs — adb logcat (docs/11 Part J)")
 
+    def rendered_elements(self) -> list[str]:
+        # Same oracle contract as web/iOS — only the source differs: the native view
+        # hierarchy. `adb exec-out uiautomator dump /dev/tty` → parse the XML for
+        # clickable nodes' text/content-desc. Wired with the rest of M2.
+        raise NotImplementedError(
+            "AndroidAdapter.rendered_elements — uiautomator hierarchy (docs/11 Part J)"
+        )
+
     def screen_size(self) -> tuple[int, int]:
         raise NotImplementedError("AndroidAdapter.screen_size (docs/11 Part J)")
 

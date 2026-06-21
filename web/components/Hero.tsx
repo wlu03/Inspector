@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import LoopViz from "./LoopViz";
+import InspectorViz from "./InspectorViz";
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -161,7 +161,7 @@ export default function Hero() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
           >
-            <LoopViz />
+            <InspectorViz />
             <div
               className="mt-3 flex gap-4 justify-end"
               style={{

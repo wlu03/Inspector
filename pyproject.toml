@@ -13,10 +13,11 @@ dependencies = [
 
 [project.optional-dependencies]
 e2b = ["e2b-desktop>=2.0"]            # web/Electron sandbox plane
-replicate = ["replicate>=0.25"]      # hosted OmniParser detector
+replicate = ["replicate>=0.25"]      # hosted OmniParser detector + LLaVA driver
+anthropic = ["anthropic>=0.40"]      # Claude brain (INSPECTOR_DRIVER=anthropic)
 web = ["websocket-client>=1.7"]      # CDP console/network capture (no Playwright)
 dev = ["pytest>=8.0", "ruff>=0.5"]
-all = ["inspector[e2b,replicate,web,dev]"]
+all = ["inspector[e2b,replicate,anthropic,web,dev]"]
 
 [project.scripts]
 inspector = "inspector.server:main"

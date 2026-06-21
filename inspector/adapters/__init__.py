@@ -16,7 +16,17 @@ REGISTRY: dict[Surface, type[SurfaceAdapter]] = {
 }
 
 
-def get_adapter(surface: Surface, config: Config) -> SurfaceAdapter:
+def get_adapter(surface: Surface, config: Config, repo_path: str | None = None) -> SurfaceAdapter:
+    # Framework override: Expo/RN can't boot natively in the Linux plane, so run it
+    # as a web preview (ExpoWebAdapter) — same workflow, real running app.
+    if repo_path:
+        try:
+            from ..launch.detect import detect_project
+            if detect_project(repo_path).framework == "expo":
+                from .expo import ExpoWebAdapter
+                return ExpoWebAdapter(config)
+        except Exception:
+            pass
     return REGISTRY[surface](config)
 
 

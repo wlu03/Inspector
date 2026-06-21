@@ -24,11 +24,15 @@ class OmniParserDetector:
 
     Returns elements; the Set-of-Mark index == the element's position in the list.
 
-    Replicate output is `{img: <uri>, elements: <string>}` where `elements` is a
-    serialized list of element dicts (confirmed via the model schema; the exact
-    string serialization is parsed defensively in `_parse_elements`). [VERIFY: once
-    Replicate credit is available, confirm the elements string format + whether
-    bbox is ratio (0..1) or pixels — see _to_elements.]
+    Replicate output (CONFIRMED live against the pinned omniparser-v2) is
+    `{"img": <annotated uri>, "elements": <string>}` where `elements` is a
+    newline-delimited string of `"icon N: {python-dict-literal}"` lines. Each dict:
+      {'type': 'text'|'icon', 'bbox': [x0, y0, x1, y1], 'interactivity': bool,
+       'content': <label str>}
+    The dicts are single-quoted Python literals (not JSON), so `_parse_elements`
+    falls through to ast.literal_eval. `bbox` is RATIOS (0..1) — the pixel
+    normalization in `_to_elements` is a safety fallback that does NOT trigger for
+    this model. Text elements are returned without passing use_paddleocr.
     """
 
     def __init__(self, config: Config):

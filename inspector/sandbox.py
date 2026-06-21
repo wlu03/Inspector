@@ -22,10 +22,13 @@ class E2BSandbox:
     def start(self) -> None:
         from e2b_desktop import Sandbox  # lazy
 
-        self._sbx = Sandbox.create(
+        kwargs = dict(
             resolution=self.config.sandbox_resolution,
             timeout=self.config.sandbox_timeout_s,
         )
+        if self.config.sandbox_template:  # custom template (e.g. one with chrome baked in)
+            kwargs["template"] = self.config.sandbox_template
+        self._sbx = Sandbox.create(**kwargs)
         self._sbx.stream.start()
 
     def keep_alive(self) -> None:

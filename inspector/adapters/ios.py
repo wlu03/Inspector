@@ -42,6 +42,14 @@ class IOSAdapter(SurfaceAdapter):
     def logs(self) -> list[str]:
         raise NotImplementedError("IOSAdapter.logs — simctl log stream (docs/11 Part K)")
 
+    def rendered_elements(self) -> list[str]:
+        # Same oracle contract as web/Android — the source is the accessibility tree:
+        # `idb ui describe-all` → collect each element's AXLabel / identifier. Wired
+        # with the rest of M3.
+        raise NotImplementedError(
+            "IOSAdapter.rendered_elements — idb ui describe-all (docs/11 Part K)"
+        )
+
     def screen_size(self) -> tuple[int, int]:
         raise NotImplementedError("IOSAdapter.screen_size (docs/11 Part K)")
 
