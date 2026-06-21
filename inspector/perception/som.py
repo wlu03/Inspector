@@ -13,7 +13,14 @@ def render_set_of_mark(image_bytes: bytes, elements: list[Element]) -> bytes:
     """
     from PIL import Image, ImageDraw, ImageFont  # lazy (pillow)
 
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    # An empty/invalid screenshot (CDP/adb hiccup, renderer mid-reload) must NOT crash
+    # the whole loop — return a 1px placeholder so observe()/act() keep going.
+    if not image_bytes:
+        return _blank_png()
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        return _blank_png()
     draw = ImageDraw.Draw(img)
     width, height = img.size
     try:
@@ -40,4 +47,11 @@ def render_set_of_mark(image_bytes: bytes, elements: list[Element]) -> bytes:
 
     out = io.BytesIO()
     img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _blank_png() -> bytes:
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (2, 2), (20, 22, 28)).save(out, format="PNG")
     return out.getvalue()

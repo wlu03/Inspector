@@ -19,12 +19,33 @@ _CHROME_TERMS = (
 )
 
 
+# Soft-keyboard keys (iOS/Android) flood the a11y tree after a TYPE action — the
+# loop must not target them or it wanders off typing 'Q' instead of testing the app.
+_KEYBOARD_LABELS = {
+    "space", "return", "delete", "shift", "more", "emoji", "dictate", "done",
+    "go", "search", "next", "globe", "backspace", "caps lock", "tab",
+}
+
+
+def _is_keyboard_key(e) -> bool:
+    label = (e.label or "").strip()
+    role = (e.role or "").lower()
+    if "keyboard" in role or role == "key":
+        return True
+    if label.lower() in _KEYBOARD_LABELS:
+        return True
+    # a single visible character is almost always a soft-keyboard key
+    return len(label) == 1 and not label.isspace()
+
+
 def _confine(elements: list) -> list:
-    """Drop elements that are clearly OS/browser chrome, keeping the explorer in-app."""
+    """Drop OS/browser chrome and soft-keyboard keys, keeping the explorer in-app."""
     out = []
     for e in elements:
         label = (e.label or "").lower()
         if any(term in label for term in _CHROME_TERMS):
+            continue
+        if _is_keyboard_key(e):
             continue
         out.append(e)
     return out

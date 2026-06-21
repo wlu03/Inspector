@@ -67,7 +67,7 @@ class Config:
     omniparser_ref: str = DEFAULT_OMNIPARSER_REF
 
     # Driver: the brain for the one-call `test_app` autopilot. "replicate" only for now.
-    driver_backend: str = "replicate"
+    driver_backend: str = "auto"  # auto → Claude when a key is present, else replicate
     driver_ref: str = DEFAULT_DRIVER_REF
     # Anthropic-brain model (when driver_backend="anthropic"). Cheaper than Opus by
     # default; override with INSPECTOR_DRIVER_MODEL (e.g. claude-haiku-4-5 = cheapest).
@@ -146,7 +146,7 @@ class Config:
             detector_backend=_env("INSPECTOR_DETECTOR", "LOOPBACK_DETECTOR", default="replicate") or "replicate",
             omniparser_endpoint=_env("INSPECTOR_OMNIPARSER_URL", "LOOPBACK_OMNIPARSER_URL"),
             omniparser_ref=_env("INSPECTOR_OMNIPARSER_REF", "LOOPBACK_OMNIPARSER_REF", default=DEFAULT_OMNIPARSER_REF) or DEFAULT_OMNIPARSER_REF,
-            driver_backend=_env("INSPECTOR_DRIVER", "LOOPBACK_DRIVER", default="replicate") or "replicate",
+            driver_backend=_env("INSPECTOR_DRIVER", "LOOPBACK_DRIVER", default="auto") or "auto",
             driver_model=_env("INSPECTOR_DRIVER_MODEL", "LOOPBACK_DRIVER_MODEL",
                               default="claude-sonnet-4-6") or "claude-sonnet-4-6",
             macos_host=_env("INSPECTOR_MACOS_HOST", "LOOPBACK_MACOS_HOST"),
