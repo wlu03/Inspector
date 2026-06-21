@@ -30,9 +30,85 @@ h1{font-size:18px;margin:0} h2{font-size:15px;color:#cdd5e0}
 table{border-collapse:collapse;width:100%;font-size:13px}
 th,td{border:1px solid #2a2f3a;padding:6px 8px;text-align:left;vertical-align:top}
 th{background:#171a21}
-.finding{background:#1b1320;border:1px solid #5a2a4a;border-radius:8px;padding:12px;margin-bottom:10px}
+.finding{background:#1b1320;border:1px solid #5a2a4a;border-radius:8px;padding:12px;margin-bottom:10px;cursor:pointer}
+.finding:hover{border-color:#ff8c42}
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;background:#3a2030;color:#ffb4d2}
 code{background:#0b0d12;padding:1px 4px;border-radius:4px;color:#a8d4ff}
+.annbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+button{background:#222834;color:#e6e6e6;border:1px solid #2a2f3a;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:13px}
+button:hover{background:#2a3340}
+.hint{color:#9aa4b2;font-size:12px}
+.overlay{position:relative;display:inline-block;line-height:0;cursor:crosshair}
+.overlay img{max-width:420px;display:block;border:1px solid #2a2f3a;border-radius:6px;background:#fff}
+.marker{position:absolute;border:2px solid #ffd166;border-radius:4px;box-sizing:border-box}
+.marker .tag{position:absolute;top:-17px;left:-1px;font-size:11px;color:#0b0d12;padding:1px 6px;border-radius:6px;white-space:nowrap;font-weight:600}
+.marker.user{border-style:dashed}
+.metabox{background:#0b0d12;padding:12px;border-radius:6px;max-height:300px;overflow:auto;font-size:12px;white-space:pre-wrap;color:#a8d4ff}
+"""
+
+# Interactive annotator JS (vanilla). __DATA__ is replaced with the embedded metadata.
+_ANNOTATOR_JS = r"""
+const DATA = __DATA__;
+const ANN = (DATA.annotations || []);
+let cur = DATA.frames[0] || null;
+const SEV = {critical:'#ff5470', high:'#ff8c42', medium:'#ffd166', low:'#7fd1ae'};
+const sc = s => SEV[(s||'').toLowerCase()] || '#9aa4b2';
+
+function frameFindings(fr){
+  return DATA.findings.filter(f => ((f.screenshot_refs||[])[0] === fr) && (f.bbox||[]).length === 4);
+}
+function setFrame(fr){ if (fr){ cur = fr; render(); window.scrollTo({top:0,behavior:'smooth'}); } }
+function step(d){
+  const i = DATA.frames.indexOf(cur);
+  cur = DATA.frames[Math.min(Math.max(i + d, 0), DATA.frames.length - 1)];
+  render();
+}
+function mk(ov, bbox, sev, label, user){
+  const [x1,y1,x2,y2] = bbox;
+  const d = document.createElement('div');
+  d.className = 'marker' + (user ? ' user' : '');
+  d.style.left = (x1*100)+'%'; d.style.top = (y1*100)+'%';
+  d.style.width = Math.max((x2-x1)*100, 1.5)+'%'; d.style.height = Math.max((y2-y1)*100, 1.5)+'%';
+  d.style.borderColor = sc(sev);
+  const t = document.createElement('span'); t.className='tag'; t.textContent = label; t.style.background = sc(sev);
+  d.appendChild(t);
+  d.addEventListener('click', ev => { ev.stopPropagation(); alert(label); });
+  ov.appendChild(d);
+}
+function render(){
+  if (!cur) return;
+  document.getElementById('annImg').src = 'frames/' + cur;
+  document.getElementById('frameLabel').textContent =
+    cur + '  (' + (DATA.frames.indexOf(cur)+1) + '/' + DATA.frames.length + ')';
+  const ov = document.getElementById('overlay');
+  [...ov.querySelectorAll('.marker')].forEach(m => m.remove());
+  frameFindings(cur).forEach(f => mk(ov, f.bbox, f.severity, f.summary, false));
+  ANN.filter(a => a.frame === cur).forEach(a => mk(ov, [a.x, a.y, a.x+0.02, a.y+0.02], a.severity, a.label, true));
+  meta();
+}
+function meta(){
+  document.getElementById('meta').textContent =
+    JSON.stringify({session: DATA.session, findings: DATA.findings, annotations: ANN}, null, 2);
+}
+function exportMeta(){
+  const blob = new Blob([JSON.stringify({session: DATA.session, findings: DATA.findings, annotations: ANN}, null, 2)],
+    {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = (DATA.session.id || 'replay') + '-metadata.json'; a.click();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const ov = document.getElementById('overlay');
+  ov.addEventListener('click', e => {
+    if (e.target.closest('.marker')) return;
+    const r = ov.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    const label = prompt('Label this bug spot:'); if (!label) return;
+    const severity = (prompt('Severity (critical/high/medium/low):', 'medium') || 'medium').toLowerCase();
+    ANN.push({frame: cur, x: +x.toFixed(4), y: +y.toFixed(4), label, severity});
+    render();
+  });
+  render();
+});
 """
 
 
@@ -167,6 +243,11 @@ def _e(x) -> str:
 
 
 def _build_html(sess, frames, actions, findings, media: str = "") -> str:
+    # the metadata blob embedded in the page (and exported by the annotator)
+    data = {"session": sess, "frames": frames, "findings": findings,
+            "actions": actions, "annotations": []}
+    data_json = json.dumps(data).replace("</", "<\\/")  # safe inside <script>
+
     p: list[str] = []
     p.append("<!doctype html><html><head><meta charset='utf-8'><title>Inspector replay</title>")
     p.append("<style>" + _CSS + "</style></head><body>")
@@ -180,13 +261,14 @@ def _build_html(sess, frames, actions, findings, media: str = "") -> str:
     p.append(media)
 
     if findings:
-        p.append("<div class='section'><h2>Findings</h2>")
+        p.append("<div class='section'><h2>Findings (" + str(len(findings)) + ")</h2>")
         for f in findings:
-            p.append(
-                "<div class='finding'><span class='badge'>" + _e(f.get("severity", ""))
-                + " · " + _e(f.get("confidence", "")) + "</span> <b>"
-                + _e(f.get("summary", "")) + "</b>"
-            )
+            frame = (f.get("screenshot_refs") or [""])[0]
+            pin = " 📍" if f.get("bbox") else ""
+            onclick = (" onclick=\"setFrame('" + _e(frame) + "')\"") if frame else ""
+            p.append("<div class='finding'" + onclick + "><span class='badge'>"
+                     + _e(f.get("severity", "")) + " · " + _e(f.get("confidence", ""))
+                     + "</span> <b>" + _e(f.get("summary", "")) + "</b>" + pin)
             p.append("<div class='meta'>expected: " + _e(f.get("expected", "")) + "</div>")
             p.append("<div class='meta'>actual: " + _e(f.get("actual", "")) + "</div>")
             if f.get("repro"):
@@ -194,10 +276,20 @@ def _build_html(sess, frames, actions, findings, media: str = "") -> str:
             p.append("</div>")
         p.append("</div>")
 
-    p.append("<div class='section'><h2>Frames (" + str(len(frames)) + ")</h2><div class='frames'>")
-    for fr in frames:
-        p.append("<div class='frame'><img src='frames/" + _e(fr) + "'><div class='cap'>" + _e(fr) + "</div></div>")
-    p.append("</div></div>")
+    # interactive annotator: click the frame to drop + label a bug marker
+    if frames:
+        p.append("<div class='section'><h2>Annotator</h2>")
+        p.append("<div class='annbar'>"
+                 "<button onclick='step(-1)'>◀ prev</button>"
+                 "<span id='frameLabel' class='meta'></span>"
+                 "<button onclick='step(1)'>next ▶</button>"
+                 "<button onclick='exportMeta()'>⬇ Export metadata (JSON)</button>"
+                 "<span class='hint'>click anywhere on the frame to drop a labeled bug marker; "
+                 "click a 📍 finding above to jump to its frame</span></div>")
+        p.append("<div id='overlay' class='overlay'><img id='annImg'></div>")
+        p.append("</div>")
+        p.append("<div class='section'><h2>Metadata (embedded in this HTML)</h2>"
+                 "<pre id='meta' class='metabox'></pre></div>")
 
     p.append("<div class='section'><h2>Actions</h2><table>")
     p.append("<tr><th>#</th><th>type</th><th>target</th><th>changed</th><th>before → after</th><th>logs</th></tr>")
@@ -209,5 +301,8 @@ def _build_html(sess, frames, actions, findings, media: str = "") -> str:
             + "</td><td>" + _e(a.get("screenshot_before")) + " → " + _e(a.get("screenshot_after"))
             + "</td><td><code>" + _e(logs) + "</code></td></tr>"
         )
-    p.append("</table></div></body></html>")
+    p.append("</table></div>")
+
+    p.append("<script>" + _ANNOTATOR_JS.replace("__DATA__", data_json) + "</script>")
+    p.append("</body></html>")
     return "".join(p)

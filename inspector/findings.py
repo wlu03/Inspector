@@ -16,6 +16,7 @@ def build_finding(
     severity: Severity = Severity.MEDIUM,
     confidence: Confidence = Confidence.MEDIUM,
     screenshot_refs: list[str] | None = None,
+    bbox: list[float] | None = None,
 ) -> Finding:
     """Helper to synthesize a structured Finding the host agent can act on."""
     return Finding(
@@ -30,4 +31,5 @@ def build_finding(
         severity=severity,
         confidence=confidence,
         screenshot_refs=screenshot_refs or [],
+        bbox=bbox or [],
     )

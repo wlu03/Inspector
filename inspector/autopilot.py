@@ -57,7 +57,10 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
         decision = _safe_decide(driver, som, _confine(elements), goal, history, logs)
 
         if decision.bug:
-            _record_bug(session, decision, history, frame_ref=_latest_frame(session))
+            # locate the bug on-screen via the element the driver was acting on, so
+            # the replay can drop a clickable marker there.
+            bbox = _bbox_for(elements, decision.target_id)
+            _record_bug(session, decision, history, frame_ref=_latest_frame(session), bbox=bbox)
 
         if decision.is_done:
             stop_reason = "model_done"
@@ -136,7 +139,8 @@ def _safe_decide(driver, som, elements, goal, history, logs) -> Decision:
 
 
 def _record_bug(
-    session, decision: Decision, history: list[dict], frame_ref: str | None
+    session, decision: Decision, history: list[dict], frame_ref: str | None,
+    bbox: list[float] | None = None,
 ) -> None:
     bug = decision.bug or {}
     severity = _SEVERITY.get(str(bug.get("severity", "")).lower(), Severity.MEDIUM)
@@ -154,6 +158,7 @@ def _record_bug(
         suspected_area=decision.expectation or "(autopilot judgment)",
         severity=severity,
         screenshot_refs=[frame_ref] if frame_ref else [],
+        bbox=bbox or [],
     )
     session.trace.save_finding(finding)
     session.record.findings.append(finding.id)
@@ -178,6 +183,14 @@ def _label_for(elements, target_id) -> str:
         return ""
     el = next((e for e in elements if e.id == target_id), None)
     return (el.label if el else "") or ""
+
+
+def _bbox_for(elements, target_id) -> list[float]:
+    """The acted element's bbox (ratios) — the bug's on-screen location for the marker."""
+    if target_id is None:
+        return []
+    el = next((e for e in elements if e.id == target_id), None)
+    return list(el.bbox) if el and el.bbox else []
 
 
 def _latest_frame(session) -> str | None:
