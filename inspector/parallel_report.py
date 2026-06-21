@@ -7,35 +7,46 @@ from __future__ import annotations
 import html
 import os
 
-_CSS = """
-:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--border:#2a323d;--fg:#e6edf3;
---muted:#9aa7b4;--accent:#4493f8;--green:#3fb950;--red:#f85149;--amber:#d29922;}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
-font-family:system-ui,-apple-system,sans-serif;font-size:14px}
-.wrap{max-width:1080px;margin:0 auto;padding:28px 32px}
-h1{font-size:24px;margin:0 0 2px}.sub{color:var(--muted);margin:0 0 22px}
-h2{font-size:15px;margin:26px 0 12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-.plan{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}
-.plan li{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px;max-width:320px}
-.plan b{color:var(--fg)}.plan span{color:var(--muted)}
+from .theme import head_style
+
+# Page-specific styling only — palette, fonts, and shared classes (.label, .card,
+# .badge, .sev-badge, .accent) come from the dashboard's `theme` so this report and
+# `dashboard/render.py` share one visual language.
+_PAGE_CSS = """
+.wrap{max-width:1180px;margin:0 auto;padding:40px 28px 80px}
+header.top{margin-bottom:8px}
+header.top h1{font-size:clamp(30px,4vw,52px);line-height:1.1;margin:10px 0 8px}
+header.top .sub{color:var(--muted);font-size:15px;max-width:560px}
+.stats{display:flex;gap:14px;flex-wrap:wrap;margin:28px 0 8px}
+.stat{flex:1 1 150px;min-width:150px}
+.stat .n{font-family:var(--font-serif);font-size:32px;line-height:1}
+.stat .k{margin-top:6px}
+.section{margin-top:40px}
+.section > .label{margin-bottom:14px;display:block}
+.plan{display:flex;flex-wrap:wrap;gap:10px;margin:0;padding:0;list-style:none}
+.plan li{background:var(--surface);border:1px solid var(--border);padding:12px 14px;max-width:340px}
+.plan b{font-family:var(--font-mono);font-size:12px;letter-spacing:.04em;color:var(--fg)}
+.plan span{color:var(--muted);font-size:13px}
 .agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
-.agent{display:block;text-decoration:none;color:inherit;background:var(--panel);
-border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:border-color .15s}
-.agent:hover{border-color:var(--accent)}
-.thumb{width:100%;height:150px;object-fit:cover;object-position:top;background:#fff;display:block;border-bottom:1px solid var(--border)}
-.thumb.empty{display:flex;align-items:center;justify-content:center;color:var(--muted);height:150px}
-.meta{padding:11px 13px}.name{font-weight:600;margin-bottom:6px}
-.r{display:flex;align-items:center;gap:8px}.muted{color:var(--muted);font-size:12px}
-.pill{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--panel2);color:var(--muted)}
-.pill.ok{background:rgba(63,185,80,.18);color:var(--green)}
-.pill.error{background:rgba(248,81,73,.18);color:var(--red)}
+.agent{display:block;text-decoration:none;color:inherit;background:var(--surface);
+  border:1px solid var(--border);overflow:hidden;transition:border-color .15s}
+.agent:hover{border-color:var(--border-hover);text-decoration:none}
+.thumb{width:100%;height:150px;object-fit:cover;object-position:top;background:#fff;
+  display:block;border-bottom:1px solid var(--border)}
+.thumb.empty{display:flex;align-items:center;justify-content:center;color:var(--muted-2);
+  height:150px;font-family:var(--font-mono);font-size:12px}
+.meta{padding:12px 14px}.name{font-weight:600;margin-bottom:8px}
+.r{display:flex;align-items:center;gap:8px}
+.r .muted{color:var(--muted);font-family:var(--font-mono);font-size:11px}
+.pill{font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  padding:2px 8px;border:1px solid currentColor;border-radius:2px;color:var(--muted-2)}
+.pill.ok{color:var(--green)}
+.pill.error{color:var(--red)}
 .findings{list-style:none;padding:0;margin:0}
-.findings li{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--amber);
-border-radius:8px;padding:10px 13px;margin-bottom:8px}
-.sev{font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;font-family:ui-monospace,monospace}
-.sev.critical,.sev.high{background:rgba(248,81,73,.18);color:var(--red)}
-.sev.medium{background:rgba(210,153,34,.18);color:var(--amber)}
-.sev.low,.sev.info{background:var(--panel2);color:var(--muted)}
+.findings li{background:var(--surface);border:1px solid var(--border);
+  border-left:3px solid var(--sev-medium);padding:11px 14px;margin-bottom:8px}
+.findings .area{color:var(--muted);font-family:var(--font-mono);font-size:11px}
+.foot{margin-top:48px;color:var(--faint);font-size:12px;font-family:var(--font-mono)}
 """
 
 
@@ -49,8 +60,8 @@ def _last_frame(session_dir: str) -> str | None:
 
 
 def _sev(s: str) -> str:
-    s = (s or "info").lower()
-    return f'<span class="sev {html.escape(s)}">{html.escape(s.upper())}</span>'
+    s = (s or "low").lower()
+    return f'<span class="sev-badge sev-{html.escape(s)}">{html.escape(s)}</span>'
 
 
 def write_parallel_report(trace_root: str, plan: list[dict], parts: list[dict],
@@ -84,18 +95,32 @@ def write_parallel_report(trace_root: str, plan: list[dict], parts: list[dict],
 
     flist = "".join(
         f'<li>{_sev(f.get("severity"))}{html.escape((f.get("summary") or "")[:150])}'
-        f'<span class="muted"> {html.escape(f.get("suspected_area", "") or "")}</span></li>'
+        f'<span class="area"> {html.escape(f.get("suspected_area", "") or "")}</span></li>'
         for f in merged
     ) or '<li class="muted">No findings surfaced.</li>'
 
+    n_steps = sum(int(p.get("steps", 0) or 0) for p in parts)
+
     page = (
         f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        f'<title>Parallel run · {len(parts)} agents</title><style>{_CSS}</style></head><body>'
-        f'<div class="wrap"><h1>Parallel run · {len(parts)} agents</h1>'
-        f'<p class="sub">{len(merged)} unique findings · headless fan-out, one agent per part</p>'
-        f'<h2>Plan</h2><ul class="plan">{plan_html}</ul>'
-        f'<h2>Agents (click a card for its full replay)</h2><div class="agents">{"".join(cards)}</div>'
-        f'<h2>Merged findings</h2><ul class="findings">{flist}</ul>'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>Inspector — Parallel run · {len(parts)} agents</title>'
+        f'{head_style(_PAGE_CSS)}</head><body><div class="wrap">'
+        f'<header class="top"><span class="label">// Inspector · Parallel Run</span>'
+        f'<h1><em>Fan-out</em> across <span class="accent">{len(parts)} agents.</span></h1>'
+        f'<div class="sub">One scout mapped the app into parts; an autonomous agent '
+        f'traversed each in parallel, and their findings are merged below.</div>'
+        f'<div class="stats">'
+        f'<div class="stat card"><div class="n accent">{len(parts)}</div><div class="k label">agents</div></div>'
+        f'<div class="stat card"><div class="n accent">{len(merged)}</div><div class="k label">unique findings</div></div>'
+        f'<div class="stat card"><div class="n accent">{n_steps}</div><div class="k label">total steps</div></div>'
+        f'</div></header>'
+        f'<div class="section"><span class="label">// Plan</span><ul class="plan">{plan_html}</ul></div>'
+        f'<div class="section"><span class="label">// Agents · click a card for its full replay</span>'
+        f'<div class="agents">{"".join(cards)}</div></div>'
+        f'<div class="section"><span class="label">// Merged findings</span>'
+        f'<ul class="findings">{flist}</ul></div>'
+        f'<div class="foot">generated by inspector.parallel_report · headless fan-out, one agent per part</div>'
         f'</div></body></html>'
     )
     path = os.path.join(out_dir, "index.html")
