@@ -23,13 +23,22 @@ def _sdk_bin(*parts: str) -> str:
     return path if os.path.exists(path) else parts[-1]
 
 
-def emulator_argv(emulator_bin: str, avd: str, port: int = 5554) -> list[str]:
-    """Args to boot a headless, ephemeral AVD with adb on a fixed port. Pure."""
-    return [
+def emulator_argv(emulator_bin: str, avd: str, port: int = 5554,
+                  headless: bool = True) -> list[str]:
+    """Args to boot an ephemeral AVD with adb on a fixed port. Pure.
+
+    headless=True adds `-no-window` so NO emulator window appears (screencap still
+    works — the framebuffer is rendered regardless). Set INSPECTOR_SHOW_EMULATOR=1 to
+    watch it instead.
+    """
+    argv = [
         emulator_bin, "-avd", avd, "-port", str(port),
         "-no-snapshot-save", "-no-boot-anim", "-no-audio",
         "-gpu", "swiftshader_indirect",   # software GL — works headless on any Mac
     ]
+    if headless:
+        argv.append("-no-window")
+    return argv
 
 
 def parse_avd_list(out: str) -> list[str]:
@@ -65,8 +74,9 @@ class LocalEmulatorRuntime:
                 "no AVD found — create one: `sdkmanager 'system-images;android-34;google_apis;arm64-v8a'` "
                 "then `avdmanager create avd -n inspector -k '...'` (see runbook)"
             )
+        headless = os.environ.get("INSPECTOR_SHOW_EMULATOR") != "1"  # default: no window
         self._proc = subprocess.Popen(
-            emulator_argv(_sdk_bin("emulator", "emulator"), avd, self.port),
+            emulator_argv(_sdk_bin("emulator", "emulator"), avd, self.port, headless=headless),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self._wait_boot()
