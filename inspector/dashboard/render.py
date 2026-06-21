@@ -144,6 +144,12 @@ def _row(s: dict) -> str:
         f"<a class='replay-link' href='{_e(replay)}' target='_blank' rel='noopener'>▶ replay</a>"
         if replay else "<span class='sub2'>no replay</span>"
     )
+    has_findings = bool(sum(sev.values()))
+    devin_btn = (
+        f"<button class='btn devin-btn' style='margin-top:6px' data-session='{_e(s.get('id'))}' "
+        "onclick='devinFixSession(this)'>Fix with Devin</button>"
+        if has_findings else ""
+    )
     created = (s.get("created_at") or "")[:19].replace("T", " ")
     alias = s.get("alias")
     ident = (f"<span class='accent'>{_e(alias)}</span> · {_e(s.get('id'))}"
@@ -162,7 +168,7 @@ def _row(s: dict) -> str:
         f"<td data-sort='{sev_score}'>{_sev_badges(sev)}</td>"
         f"<td class='mono sub2' data-sort='{s.get('n_actions', 0)}'>{s.get('n_actions', 0)} steps · {s.get('n_frames', 0)} frames</td>"
         f"<td class='sub2' data-sort='{_e(s.get('created_at') or '')}'>{_e(created)}</td>"
-        f"<td>{link}</td>"
+        f"<td>{link}<div>{devin_btn}</div></td>"
         "</tr>"
     )
 
@@ -359,6 +365,21 @@ async function devinFix(btn){
     if(j.error){ btn.textContent = 'error: ' + j.error; btn.disabled = false; return; }
     btn.outerHTML = "<a class='replay-link' href='" + j.devin_url +
       "' target='_blank' rel='noopener'>Devin working ↗</a>";
+    if(j.devin_session_id) pollDevin(j.devin_session_id, 0);
+  }catch(e){ btn.textContent = 'error'; btn.disabled = false; }
+}
+
+// Fix a WHOLE run with Devin: one PR for all of a session's findings
+async function devinFixSession(btn){
+  const sid = btn.dataset.session;
+  btn.disabled = true; btn.textContent = 'starting Devin…';
+  try{
+    const r = await fetch('api/devin-fix-session', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({session_id: sid})});
+    const j = await r.json();
+    if(j.error){ btn.textContent = 'error: ' + j.error; btn.disabled = false; return; }
+    btn.outerHTML = "<a class='replay-link' href='" + j.devin_url +
+      "' target='_blank' rel='noopener'>Devin: " + (j.n_findings||'') + " fixes ↗</a>";
     if(j.devin_session_id) pollDevin(j.devin_session_id, 0);
   }catch(e){ btn.textContent = 'error'; btn.disabled = false; }
 }
