@@ -28,7 +28,7 @@ from inspector.dashboard import serve
 from inspector.dashboard.build import build_dashboard
 
 cfg = Config.from_env()
-build_dashboard(cfg.trace_root)
+build_dashboard(cfg.trace_root, ensure_replays=False)   # replays already exist → serve fast
 serve.set_action_handler(mcp._dashboard_action)   # powers Fix with Devin (opens a PR)
 serve.set_live_provider(mcp._live_sessions)        # powers the live feed
 base = serve.ensure_server(cfg.trace_root)
