@@ -184,19 +184,24 @@ class _Session:
 
 
 def test_check_records_finding_when_brain_confirms():
-    session = _Session(rendered=["Cancel"])  # "Save" is missing
+    # A credible miss: most declared elements rendered, exactly ONE ("Save") absent.
+    # The bad-frame guard only trusts an absence against a solid baseline of present
+    # elements, so the scenario needs that baseline (not a 1-of-1 blank-frame case).
+    session = _Session(rendered=["Cancel", "Home", "Profile", "Settings"])  # "Save" missing
     def judge(candidate, rendered, screenshot):
         return {"is_bug": True, "severity": "high", "reason": "should be on the form"}
-    found = check_expectations(session, [_exp("Save")], judge)
+    expected = [_exp("Cancel"), _exp("Home"), _exp("Profile"), _exp("Settings"), _exp("Save")]
+    found = check_expectations(session, expected, judge)
     assert len(found) == 1
     assert session.record.findings == [found[0].id]
     assert "Save" in found[0].summary and found[0].suspected_area == "src.jsx:1"
 
 
 def test_check_skips_when_brain_says_offscreen():
-    session = _Session(rendered=["Cancel"])
+    session = _Session(rendered=["Cancel", "Home", "Profile", "Settings"])  # baseline present
     judge = lambda c, r, s: {"is_bug": False, "reason": "behind a route"}  # noqa: E731
-    assert check_expectations(session, [_exp("Save")], judge) == []
+    expected = [_exp("Cancel"), _exp("Home"), _exp("Profile"), _exp("Settings"), _exp("Save")]
+    assert check_expectations(session, expected, judge) == []
     assert session.trace.saved == []
 
 
