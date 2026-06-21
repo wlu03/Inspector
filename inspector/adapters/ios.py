@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 
 from ..config import Config
@@ -407,18 +408,20 @@ class IOSAdapter(SurfaceAdapter):
 
     # --- helpers ---
     def _ensure_device(self) -> None:
-        if self.udid:
-            self.plane.run_sync(f"xcrun simctl boot {self.udid} 2>/dev/null || true", timeout=120)
-            return
-        r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
-        udid = first_iphone_udid(r.stdout if r and r.stdout else "")
-        if not udid:
-            self.plane.run_sync('xcrun simctl create Inspector "iPhone 15" 2>/dev/null || true', timeout=60)
+        if not self.udid:
             r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
             udid = first_iphone_udid(r.stdout if r and r.stdout else "")
-        self.udid = udid
-        if udid:
-            self.plane.run_sync(f"xcrun simctl boot {udid} 2>/dev/null || true", timeout=120)
+            if not udid:
+                self.plane.run_sync('xcrun simctl create Inspector "iPhone 15" 2>/dev/null || true', timeout=60)
+                r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
+                udid = first_iphone_udid(r.stdout if r and r.stdout else "")
+            self.udid = udid
+        if self.udid:
+            self.plane.run_sync(f"xcrun simctl boot {self.udid} 2>/dev/null || true", timeout=120)
+            # Demo mode: pop the Simulator window so you can WATCH the app being driven.
+            # (Driving still goes through simctl/idb — the window is just for viewing.)
+            if os.environ.get("INSPECTOR_SHOW_SIMULATOR") == "1":
+                self.plane.run_sync("open -a Simulator", timeout=30)
 
     def _apple_build_cmd(self, app_dir: str) -> str:
         """Regenerate the xcodegen project (if any), detect the scheme, and build.
