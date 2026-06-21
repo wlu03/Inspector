@@ -31,8 +31,9 @@ header.rhead h1{font-size:24px}
 .verdict-review{color:var(--sev-high)}
 .clean{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--green);
   padding:16px;color:var(--muted);font-size:14px}
-.fhandoff{display:flex;gap:8px;margin-top:10px}
+.fhandoff{display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap}
 .fhandoff button{font-size:11px;padding:4px 9px}
+.fhandoff a.dlink{font-family:var(--font-mono);font-size:11px;color:var(--green);text-decoration:none}
 .meta{color:var(--muted);font-size:13px;margin-top:6px}
 .section{padding:18px 28px}
 .section > .label{display:block;margin-bottom:12px}
@@ -88,6 +89,14 @@ details.clip{margin:6px 28px;max-width:340px}
 details.clip[open]{margin-bottom:14px}
 details.clip video,details.clip img{max-width:340px;width:100%;border:1px solid var(--border);background:#fff;margin-top:8px}
 summary{cursor:pointer;color:var(--muted);font-family:var(--font-mono);font-size:12px}
+/* Android captures are portrait phone screens — cap the screen + video narrower
+   so they don't dominate the page at the wide desktop/web defaults above. */
+/* portrait mobile surfaces (android + ios) — keep the tall phone frames compact */
+.surface-android .player,.surface-ios .player{max-width:300px}
+.surface-android .overlay img,.surface-ios .overlay img{max-width:300px}
+.surface-android details.clip,.surface-ios details.clip,
+.surface-android details.clip video,.surface-ios details.clip video,
+.surface-android details.clip img,.surface-ios details.clip img{max-width:300px}
 """
 
 # Interactive player JS (vanilla): a frame slider with a timeline of error markers
@@ -234,6 +243,37 @@ function copyFix(e, i, btn){ e.stopPropagation(); const f = (DATA.findings||[])[
 function copyRepro(e, i, btn){
   e.stopPropagation(); const f = (DATA.findings||[])[i]; if(!f) return;
   copyText((f.repro && f.repro.length) ? f.repro.join('\n') : (f.summary || ''), btn);
+}
+// launch Devin to fix THIS finding (served via the dashboard; api is one level up)
+async function devinFix(e, i, btn){
+  e.stopPropagation();
+  const f = (DATA.findings||[])[i]; if(!f) return;
+  const sid = (DATA.session||{}).id, fid = f.id;
+  if(!sid || !fid){ flash(btn, 'no id'); return; }
+  btn.disabled = true; btn.textContent = 'starting Devin…';
+  try{
+    const r = await fetch('../api/devin-fix', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: sid, finding_id: fid})});
+    const j = await r.json();
+    if(j.error){ btn.disabled = false; btn.textContent = 'error: ' + j.error; return; }
+    btn.outerHTML = "<a class='dlink' href='" + j.devin_url +
+      "' target='_blank' rel='noopener'>Devin working ↗</a>";
+    if(j.devin_session_id) pollDevin(j.devin_session_id, 0);
+  }catch(err){ btn.disabled = false; btn.textContent = 'open via the dashboard server'; }
+}
+function pollDevin(sid, tries){
+  if(tries > 40) return;  // 40 × 15s = 10 min cap
+  setTimeout(async () => {
+    try{
+      const r = await fetch('../api/devin-status', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({devin_session_id: sid})});
+      const j = await r.json();
+      if(j.pr_url){ alert('Devin opened a PR:\n' + j.pr_url); return; }
+    }catch(e){}
+    pollDevin(sid, tries + 1);
+  }, 15000);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -537,7 +577,10 @@ def _build_html(sess, frames, actions, findings, media: str = "", run: dict | No
     p.append("<!doctype html><html lang='en'><head><meta charset='utf-8'>")
     p.append("<meta name='viewport' content='width=device-width,initial-scale=1'>")
     p.append("<title>Inspector replay — " + _e(sess.get("id", "")) + "</title>")
-    p.append(head_style(_REPLAY_CSS) + "</head><body><div class='wrap'>")
+    surface_cls = " surface-" + "".join(
+        c for c in str(sess.get("surface", "")).lower() if c.isalnum()
+    )
+    p.append(head_style(_REPLAY_CSS) + "</head><body><div class='wrap" + surface_cls + "'>")
 
     created = (sess.get("created_at") or "")[:19].replace("T", " ")
     p.append("<a class='back' href='../dashboard.html'>← All runs</a>")
@@ -602,6 +645,7 @@ def _build_html(sess, frames, actions, findings, media: str = "", run: dict | No
             p.append(f"<div class='fhandoff'>"
                      f"<button onclick='copyRepro(event,{i},this)' title='copy the repro steps'>copy repro</button>"
                      f"<button onclick='copyFix(event,{i},this)' title='copy a ready-to-paste fix prompt for a coding agent'>copy fix prompt</button>"
+                     f"<button onclick='devinFix(event,{i},this)' title='launch Devin to open a PR fixing this issue'>Fix with Devin</button>"
                      f"</div>")
             p.append("</div>")
         p.append("</div>")
