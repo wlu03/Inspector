@@ -129,8 +129,13 @@ def _extract_web(text: str):
     yield from _finditer(r"<(?:button|Button)\b[^>]*>(.*?)</(?:button|Button)>", text, "button")
     yield from _finditer(r"<(?:a|Link|NavLink)\b[^>]*>(.*?)</(?:a|Link|NavLink)>", text, "link")
     yield from _finditer(r"<input\b[^>]*\bplaceholder=[\"']([^\"']+)[\"']", text, "input")
-    # explicit aria-labels on anything interactive
-    yield from _finditer(r"aria-label=[\"']([^\"']+)[\"']", text, "element")
+    # explicit aria-labels, but ONLY on interactive tags — a decorative <div aria-label>
+    # or landmark shouldn't become an expected affordance the oracle hunts for.
+    yield from _finditer(
+        r"<(?:button|a|Button|Link|NavLink|input|select|textarea)\b[^>]*"
+        r"\baria-label=[\"']([^\"']+)[\"']", text, "element")
+    yield from _finditer(
+        r"role=[\"']button[\"'][^>]*\baria-label=[\"']([^\"']+)[\"']", text, "element")
     # role="button" with adjacent text content
     yield from _finditer(r"role=[\"']button[\"'][^>]*>(.*?)<", text, "button")
 

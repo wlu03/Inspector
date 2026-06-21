@@ -89,6 +89,12 @@ class AndroidAdapter(SurfaceAdapter):
     # --- hands ---
     def input(self, action: InputAction) -> None:
         t = action.type
+        # guard against None coords interpolating the literal "None" into the shell cmd
+        if t in (ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.DRAG):
+            if action.x is None or action.y is None:
+                return
+        if t == ActionType.DRAG and (action.to_x is None or action.to_y is None):
+            return
         if t in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
             self.adb.shell(f"input tap {action.x} {action.y}")
             if t == ActionType.DOUBLE_CLICK:

@@ -58,9 +58,20 @@ def apk_glob_patterns(framework: str) -> list[str]:
     ]
 
 
+# Build intermediates / test APKs that must never be installed as "the app".
+_APK_EXCLUDE = ("androidtest", "unaligned", "unsigned")
+
+
 def pick_newest(paths: list[str]) -> str | None:
-    """Newest existing path by mtime (the just-built APK). Pure-ish (stats files)."""
-    existing = [p for p in paths if os.path.isfile(p)]
+    """Newest existing, installable APK by mtime. Pure-ish (stats files).
+
+    Excludes instrumentation/intermediate variants (e.g. app-debug-androidTest.apk)
+    that share the `*debug*` glob but must not be installed as the app.
+    """
+    existing = [
+        p for p in paths
+        if os.path.isfile(p) and not any(x in os.path.basename(p).lower() for x in _APK_EXCLUDE)
+    ]
     if not existing:
         return None
     return max(existing, key=os.path.getmtime)
@@ -105,10 +116,14 @@ class AndroidBuilder:
             raise RuntimeError(f"build step failed: {cmd}\n{tail}")
 
     def _find_apk(self, repo_path: str, framework: str) -> str | None:
-        candidates: list[str] = []
+        # Prefer specific patterns over the broad fallback: take the first pattern
+        # that yields an installable APK, so a stray intermediate matched only by the
+        # `**` fallback never wins on mtime over the real app/debug output.
         for pattern in apk_glob_patterns(framework):
-            candidates += glob.glob(os.path.join(repo_path, pattern), recursive=True)
-        return pick_newest(candidates)
+            hit = pick_newest(glob.glob(os.path.join(repo_path, pattern), recursive=True))
+            if hit:
+                return hit
+        return None
 
     def _badging(self, apk: str) -> tuple[str | None, str | None]:
         out = subprocess.run(

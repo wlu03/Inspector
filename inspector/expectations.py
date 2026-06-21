@@ -43,7 +43,11 @@ def diff_expected_vs_actual(
         ne = _norm(e.label)
         if not ne or ne in seen:
             continue
-        present = any(ne == na or ne in na or na in ne for na in actual_norm)
+        # Match on equality, or substring ONLY for labels long enough that containment
+        # is meaningful (>=4 chars) — so "ok"/"x" don't spuriously match "Bookmarks".
+        # The reverse (rendered-in-expected) direction is dropped: a tiny rendered
+        # label shouldn't satisfy a long expected one.
+        present = any(ne == na or (len(ne) >= 4 and ne in na) for na in actual_norm)
         if not present:
             seen.add(ne)
             out.append(e)

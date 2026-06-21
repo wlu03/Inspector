@@ -197,11 +197,13 @@ class CDPClient:
             return b""
 
     def click(self, x: int, y: int, clicks: int = 1) -> None:
-        for _ in range(clicks):
+        # clickCount increments per press so the DOM sees detail=2 on the 2nd press —
+        # required for `dblclick` handlers to fire (two clickCount:1 clicks won't).
+        for n in range(1, clicks + 1):
             self._cmd("Input.dispatchMouseEvent",
-                      {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
+                      {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": n})
             self._cmd("Input.dispatchMouseEvent",
-                      {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
+                      {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": n})
 
     def type_text(self, text: str) -> None:
         self._cmd("Input.insertText", {"text": text or ""})

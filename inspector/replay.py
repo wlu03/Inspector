@@ -519,7 +519,9 @@ def _build_html(sess, frames, actions, findings, media: str = "", run: dict | No
     # the trace metadata embedded for the player (slider + timeline + overlays)
     data = {"session": sess, "frames": frames, "findings": findings,
             "actions": actions, "annotations": []}
-    data_json = json.dumps(data).replace("</", "<\\/")  # safe inside <script>
+    # Escape ALL '<' so untrusted finding text can't break out of the <script> via
+    # </script> OR an HTML comment open (<!--…<script>…). < is valid in JS strings.
+    data_json = json.dumps(data).replace("<", "\\u003c")
 
     by_sev: dict[str, int] = {}
     for f in findings:

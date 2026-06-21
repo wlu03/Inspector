@@ -163,10 +163,19 @@ class LocalElectronAdapter(SurfaceAdapter):
             self.cdp = None
         if self._proc is not None:
             try:
-                os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+                pgid = os.getpgid(self._proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                try:
+                    self._proc.wait(timeout=5)  # reap; avoid a zombie + free CDP port 9223
+                except Exception:
+                    os.killpg(pgid, signal.SIGKILL)  # Electron ignored SIGTERM → force it
+                    try:
+                        self._proc.wait(timeout=5)
+                    except Exception:
+                        pass
             except Exception:
                 try:
-                    self._proc.terminate()
+                    self._proc.kill()
                 except Exception:
                     pass
             self._proc = None

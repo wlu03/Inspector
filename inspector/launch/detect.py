@@ -29,6 +29,9 @@ _LOCKFILES = [
 # most specific first because frameworks share deps (SvelteKit/Astro both use vite).
 _FRAMEWORKS = [
     ("expo", "expo", Surface.ANDROID, "start", 8081),
+    # bare React Native (no Expo) — a mobile project; without this it falls through
+    # to the generic web fallback and gets the wrong surface/adapter.
+    ("react-native", "react-native", Surface.ANDROID, "start", 8081),
     ("next", "next", Surface.WEB, "dev", 3000),
     ("@sveltejs/kit", "sveltekit", Surface.WEB, "dev", 5173),
     ("astro", "astro", Surface.WEB, "dev", 4321),

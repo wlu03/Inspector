@@ -161,7 +161,7 @@ class Config:
             flutter_bin=_env("INSPECTOR_FLUTTER_BIN", "LOOPBACK_FLUTTER_BIN", default="flutter") or "flutter",
             execution=_env("INSPECTOR_EXECUTION", "LOOPBACK_EXECUTION", default="local") or "local",
             driver_ref=_env("INSPECTOR_DRIVER_REF", "LOOPBACK_DRIVER_REF", default=DEFAULT_DRIVER_REF) or DEFAULT_DRIVER_REF,
-            sandbox_template=os.getenv("E2B_TEMPLATE"),
+            sandbox_template=_env("INSPECTOR_E2B_TEMPLATE", "E2B_TEMPLATE"),
             session_idle_ttl_s=int(_env("INSPECTOR_SESSION_IDLE_TTL", "LOOPBACK_SESSION_IDLE_TTL", default="600") or "600"),
             reaper_interval_s=int(_env("INSPECTOR_REAPER_INTERVAL", "LOOPBACK_REAPER_INTERVAL", default="60") or "60"),
             max_images_per_session=int(_env("INSPECTOR_MAX_IMAGES", "LOOPBACK_MAX_IMAGES", default="0") or "0"),

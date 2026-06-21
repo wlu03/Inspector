@@ -30,7 +30,10 @@ class LoopGuard:
         self.iterations += 1
 
     def observe_state(self, screenshot: bytes, logs: list[str]) -> None:
-        digest = hashlib.sha256(screenshot + "\n".join(logs).encode()).hexdigest()
+        # Hash the SCREENSHOT only. Folding in logs defeats no-progress detection on
+        # apps that emit timestamped/heartbeat lines every tick — the screen is frozen
+        # but the digest keeps changing, so a stuck run never early-exits.
+        digest = hashlib.sha256(screenshot).hexdigest()
         if digest == self._last_hash:
             self._repeat += 1
         else:

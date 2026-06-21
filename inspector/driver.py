@@ -341,7 +341,13 @@ class FallbackDriver:
         self.fallback = fallback
 
     def decide(self, som, elements, goal, history, logs) -> Decision:
-        decision = self.primary.decide(som, elements, goal, history, logs)
+        try:
+            decision = self.primary.decide(som, elements, goal, history, logs)
+        except Exception:
+            # a raised error (rate-limit, token-limit, API failure) must ALSO fall back
+            # to deterministic exploration — otherwise every erroring step is a wasted
+            # no-op and the run does zero work.
+            return self.fallback.decide(som, elements, goal, history, logs)
         if _is_degenerate(decision):
             return self.fallback.decide(som, elements, goal, history, logs)
         return decision

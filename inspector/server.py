@@ -53,6 +53,10 @@ def _friendly(fn):
                 "hint": "call launch_app or test_app to start one "
                         "(or list_runs / get_run for past runs on disk)",
             }
+        except Exception as exc:  # noqa: BLE001
+            # a dead sandbox / CDP / adb error mid-session must return a structured
+            # error, not escape the tool and kill the host's turn.
+            return {"error": "tool failed", "detail": str(exc)[:300]}
     return wrapper
 
 
@@ -124,7 +128,13 @@ def _bg_launch(session, dev_command: str | None) -> None:
     try:
         session.launch(dev_command)
     except Exception as exc:  # noqa: BLE001
-        session._launch_error = str(exc)[:300]  # state is already ERROR (+ torn down)
+        session._launch_error = str(exc)[:300]
+        # ensure the billed sandbox is released even if launch() raised before its own
+        # teardown ran (e.g. sandbox.start() itself failed) — the sync path does this too.
+        try:
+            MANAGER.stop(session.record.id)
+        except Exception:
+            pass
 
 
 def _live_sessions() -> dict:
