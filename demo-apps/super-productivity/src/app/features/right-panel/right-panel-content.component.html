@@ -1,0 +1,30 @@
+@if (panelContent() === 'ISSUE_PANEL') {
+  @defer (prefetch on idle) {
+    <issue-panel [@slideInFromRight]></issue-panel>
+  }
+} @else if (panelContent() === 'NOTES') {
+  @defer (prefetch on idle) {
+    <notes [@slideInFromRight]></notes>
+  }
+} @else if (panelContent() === 'PLUGIN') {
+  @for (key of pluginPanelKeys(); track key) {
+    @defer (prefetch on idle) {
+      <plugin-panel-container [@slideInFromRight]></plugin-panel-container>
+    }
+  }
+  <!-- Task content comes last so we can avoid an extra effect to unset selected task -->
+} @else if (panelContent() === 'SCHEDULE_DAY_PANEL') {
+  @defer (prefetch on idle) {
+    <schedule-day-panel [@slideInFromRight]></schedule-day-panel>
+  }
+} @else {
+  @if (selectedTaskWithDelayForNone(); as task) {
+    @defer (prefetch on idle) {
+      <task-detail-panel
+        [@taskDetailPanelTaskChange]="task.id"
+        [@.disabled]="isDisableTaskPanelAni()"
+        [task]="task"
+      ></task-detail-panel>
+    }
+  }
+}
