@@ -182,16 +182,6 @@ def _devin_fix(signature: str) -> dict:
     return out
 
 
-def _devin_fix_session(session_id: str) -> dict:
-    """Start ONE Devin fix for every finding in a run (the per-session button)."""
-    from . import devin
-
-    out = devin.fix_session_with_devin(CONFIG, CONFIG.trace_root, session_id)
-    if not out.get("error"):
-        _rebuild_dashboard()
-    return out
-
-
 def _devin_poll(devin_session_id: str) -> dict:
     """Poll a Devin session; refresh the dashboard if a PR landed."""
     from . import devin
@@ -217,9 +207,6 @@ def _dashboard_action(path: str, body: dict) -> dict:
     if path == "/api/devin-fix":
         sig = _resolve_signature(body)
         return _devin_fix(sig) if sig else {"error": "missing signature or session_id+finding_id"}
-    if path == "/api/devin-fix-session":
-        sid = body.get("session_id")
-        return _devin_fix_session(sid) if sid else {"error": "missing session_id"}
     if path == "/api/devin-status":
         sid = body.get("devin_session_id") or body.get("session_id")
         return _devin_poll(sid) if sid else {"error": "missing devin_session_id"}
