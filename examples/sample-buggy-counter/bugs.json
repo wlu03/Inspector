@@ -1,0 +1,31 @@
+{
+  "fixture": "sample-buggy-counter",
+  "surface": "electron",
+  "framework": "electron",
+  "screens": ["Counter"],
+  "notes": "Cartographer Phase 0 target: deterministic LOGIC_ARITHMETIC + STATE_SYNC bugs, observable from the app's own rendered state (no payloads).",
+  "scoring": "semantic",
+  "bugs": [
+    {
+      "id": "BUG-01", "screen": "Counter", "type": "logic", "severity": "high", "difficulty": "obvious",
+      "log_signature": null,
+      "title": "Plus increments the count by 2 instead of 1",
+      "description": "Clicking Plus raises the count by 2 each click instead of 1.",
+      "expected_finding": "Reports the Plus button increments the counter by 2 (wrong delta) instead of 1."
+    },
+    {
+      "id": "BUG-02", "screen": "Counter", "type": "logic", "severity": "medium", "difficulty": "subtle",
+      "log_signature": null,
+      "title": "Reset sets the count to 1 instead of 0",
+      "description": "Clicking Reset sets the count to 1 rather than clearing it to 0.",
+      "expected_finding": "Reports Reset does not clear the counter to 0 (shows 1)."
+    },
+    {
+      "id": "BUG-03", "screen": "Counter", "type": "control-mismatch", "severity": "medium", "difficulty": "subtle",
+      "log_signature": null,
+      "title": "Notifications toggle label flips but aria-pressed never updates",
+      "description": "Clicking the toggle flips its label Off/On but its aria-pressed state never changes — control and state disagree.",
+      "expected_finding": "Reports the notifications toggle's visible state and backing aria-pressed/state disagree."
+    }
+  ]
+}

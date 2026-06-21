@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from ..models import ActionType, Surface
+from ..models import ActionType, Element, Surface
 
 
 @dataclass
@@ -70,6 +70,36 @@ class SurfaceAdapter(ABC):
         inherit this empty default (the audit just no-ops).
         """
         return {}
+
+    def detect_elements(self, screenshot: bytes) -> list[Element] | None:
+        """Optional native element source (the accessibility tree).
+
+        Return the elements directly — the SAME `Element[]` (bbox as 0..1 ratios,
+        Set-of-Mark id = list position) the OmniParser detector produces — or `None`
+        to fall back to the vision detector. Native surfaces (iOS/macOS) override this
+        with the a11y tree; web/Electron/Android keep `None` and ground via OmniParser.
+        Clicks still go through pixels (`Element.center_px`), so this is purely an
+        additive grounding source — the pure-computer-use action path is unchanged.
+        """
+        return None
+
+    def control_state(self, element_id: int) -> dict:
+        """Structured control state for the element with this Set-of-Mark id —
+        {role, value, checked, pressed, ariaChecked, selected, expanded, text}.
+
+        The spine of the Cartographer STATE_SYNC oracle (docs/15): it compares a
+        control to ITSELF across one action, so a label that flips while the backing
+        state doesn't (or vice-versa) is caught without ever judging injected input.
+        Default `{}` (no structured state available); CDP/AX adapters override.
+        """
+        return {}
+
+    def text_elements(self) -> list[Element]:
+        """Non-interactive displayed text (values/captions the interactive grounding
+        misses — a counter's display, a status caption). Cartographer oracles READ
+        these to measure state. Default `[]`; CDP/AX adapters override. Ids should not
+        collide with `detect_elements`' ids (the caller offsets them)."""
+        return []
 
     @abstractmethod
     def screen_size(self) -> tuple[int, int]:

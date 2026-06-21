@@ -4,102 +4,133 @@
   "framework": "SwiftUI",
   "bundle_id": "com.inspector.SampleBuggyApp",
   "screens": ["Settings", "Profile", "About"],
-  "log_call": "NSLog",
-  "crash_idiom": "array index out of range",
+  "notes": "v2 — hard-to-surface UI bugs. NONE emit a log; each is a subtle UI-STATE defect that only appears after a specific multi-step sequence and is detectable only by reading the accessibility tree (a Text's content is its AXLabel; a TextField's typed contents are its AXValue). Scored by the post-sequence a11y oracle (scripts/verify_ios_bugs.py) and/or semantic finding-match — there is no greppable log_signature.",
+  "scoring": "semantic",
   "bugs": [
     {
       "id": "BUG-01",
-      "screen": "Settings",
-      "type": "crash",
-      "severity": "critical",
-      "difficulty": "obvious",
+      "screen": "Profile",
+      "type": "state-sync",
+      "severity": "high",
+      "difficulty": "hard",
+      "log_signature": null,
+      "crash_signature": null,
+      "title": "Committed profile edits lost on re-entry; saved-summary contradicts the empty field",
+      "description": "Profile's editable fields are fresh view-local @State never seeded back from the model (the .onAppear read-back is missing). After Continue commits a name, re-entering Profile shows the model-backed 'Saved profile' row with the name, but the Display name field is blank — a same-screen contradiction.",
       "trigger": [
-        "Open Settings",
-        "Type any value into 'Your name'",
-        "Tap the Save button"
+        "On Profile, type 'Wesley' into Display name and 'w@x.com' into Email",
+        "Tap Continue (navigates to About)",
+        "Tap Back once to land on the duplicate Profile",
+        "Read the 'Saved profile' row AND the Display name field"
       ],
-      "expected": "A green 'Saved' confirmation appears below the field.",
-      "actual": "App logs the signature then crashes with a fatal index-out-of-range before the confirmation is set; 'Saved' never appears.",
-      "log_signature": "query not invalidated after save",
-      "crash_signature": "Fatal error: Index out of range"
+      "expected": "On re-entry the Display name field is re-seeded from the model and reads 'Wesley', matching the saved summary.",
+      "actual": "The 'Saved profile' row reads 'Wesley' but the Display name field is empty — the committed edit appears lost.",
+      "observable_ui_diff": "profile.savedName AXLabel=='Wesley' while the Display name TextField AXValue is empty.",
+      "oracle": "PRESENT iff a node AXLabel=='Wesley' exists AND the Display name field AXValue is empty; FIXED iff both are 'Wesley'.",
+      "expected_finding": "Reports the Profile display-name field went blank after navigating away and back, although a saved name is still shown."
     },
     {
       "id": "BUG-02",
       "screen": "Settings",
-      "type": "silent-state",
+      "type": "input-edge",
       "severity": "medium",
       "difficulty": "subtle",
+      "log_signature": null,
+      "crash_signature": null,
+      "title": "Save Int-normalizes the name and silently drops leading zeros while 'Saved' claims success",
+      "description": "Save round-trips the name through Int to 'normalize' numeric input, so '007' becomes '7'. The green 'Saved' confirmation still appears, but the field (bound to the same @Published value) silently re-renders to '7'.",
       "trigger": [
-        "Open Settings",
-        "Tap the Notifications toggle"
+        "On Settings, type '007' into 'Your name'",
+        "Tap Save",
+        "Re-read the 'Your name' field value and the 'Saved' confirmation"
       ],
-      "expected": "The toggle label flips and app.notificationsEnabled updates to match.",
-      "actual": "The visual label flips (On/Off) but app.notificationsEnabled stays false; underlying state desyncs. No crash.",
-      "log_signature": "toggle state desync",
-      "crash_signature": null
+      "expected": "The name persists verbatim ('007') and 'Saved' appears.",
+      "actual": "The field silently becomes '7' while 'Saved' still appears — success is reported but the value changed.",
+      "observable_ui_diff": "settings.name.field AXValue becomes '7' (not '007') after Save while settings.savedConfirmation reads 'Saved'.",
+      "oracle": "PRESENT iff after typing '007' and Save the field AXValue=='7' AND a 'Saved' confirmation shows; FIXED iff AXValue=='007'.",
+      "expected_finding": "Reports saving a value like '007' silently changes it (leading zeros dropped) though it claims success."
     },
     {
       "id": "BUG-03",
-      "screen": "Profile",
-      "type": "validation-bypass",
-      "severity": "high",
+      "screen": "Settings",
+      "type": "display-format",
+      "severity": "low",
       "difficulty": "subtle",
+      "log_signature": null,
+      "crash_signature": null,
+      "title": "Character counter is off-by-one (boundary-safe: correct when empty, wrong once you type)",
+      "description": "The 'Your name' counter renders max(0, count-1)/30, so the empty field shows a correct-looking '0/30' but every non-empty value is undercounted by one — 'Alice' (5) shows '4/30'.",
       "trigger": [
-        "Open Profile",
-        "Leave 'Display name' empty",
-        "Enter an email with no '@' (e.g. 'foo')",
-        "Tap Continue"
+        "On Settings, observe the counter reads '0/30' on the empty field",
+        "Type exactly 'Alice' (5 chars) into 'Your name'",
+        "Read the counter and compare to the typed length"
       ],
-      "expected": "Continue is blocked because Display name is required and Email must contain '@'.",
-      "actual": "App logs the signature then proceeds as if valid, showing the Result section.",
-      "log_signature": "validation skipped on submit",
-      "crash_signature": null
+      "expected": "The counter shows '5/30' for a 5-character name.",
+      "actual": "The counter shows '4/30' — undercounts by one.",
+      "observable_ui_diff": "settings.name.counter AXLabel=='4/30' after typing 'Alice' (should be '5/30').",
+      "oracle": "PRESENT iff after typing an N-char value the counter leading int == N-1; FIXED iff == N.",
+      "expected_finding": "Reports the character counter is off by one / undercounts the typed length."
     },
     {
       "id": "BUG-04",
       "screen": "Profile",
-      "type": "cross-screen-state",
-      "severity": "medium",
+      "type": "display-format",
+      "severity": "low",
       "difficulty": "subtle",
+      "log_signature": null,
+      "crash_signature": null,
+      "title": "Profile completeness percent truncates instead of rounding (2 of 3 shows 66%, not 67%)",
+      "description": "'Profile completeness' is filled*100/3 with integer division, so two of three fields filled shows '66%' instead of round(66.67)=='67%'.",
       "trigger": [
-        "On Settings, type a name into 'Your name'",
-        "Navigate to Profile",
-        "Read the 'Saved from Settings' summary"
+        "On Profile, fill exactly two of the three fields (Display name + Email), leave Phone empty",
+        "Read the 'Profile completeness' percentage"
       ],
-      "expected": "The summary shows the name entered on Settings.",
-      "actual": "The summary always renders blank ('—'); the Settings name never propagates across screens.",
-      "log_signature": "state not propagated across screens",
-      "crash_signature": null
+      "expected": "Two of three fields rounds to '67%'.",
+      "actual": "Shows '66%' (integer-division truncation).",
+      "observable_ui_diff": "profile.completeness AXLabel reads 'Profile completeness 66%' (should be 67%).",
+      "oracle": "PRESENT iff with 2 of 3 fields filled the percent == 66; FIXED iff == 67.",
+      "expected_finding": "Reports the completeness percentage rounds down / is wrong (66% for two of three)."
     },
     {
       "id": "BUG-05",
       "screen": "About",
-      "type": "navigation-defect",
+      "type": "navigation-focus",
       "severity": "high",
-      "difficulty": "obvious",
+      "difficulty": "hard",
+      "log_signature": null,
+      "crash_signature": null,
+      "title": "Continue pushes a duplicate Profile; the back stack is one screen too deep",
+      "description": "Profile's Continue pushes a stray duplicate Profile before About (stack: Profile > Profile > About). Backing out of About lands on a blank Profile and two Backs never reach the Settings root.",
       "trigger": [
-        "Open About",
-        "Tap 'Reset all'"
+        "On Profile, type a name and Email, tap Continue (lands on About)",
+        "Tap Back twice and read the navigation title"
       ],
-      "expected": "All state is cleared and the app returns to the Settings root.",
-      "actual": "Nothing is cleared and the app routes to the wrong screen (Profile is pushed).",
-      "log_signature": "reset no-op, wrong route",
-      "crash_signature": null
+      "expected": "Two Backs from About reach the Settings root (no Back button).",
+      "actual": "After two Backs the title is still 'Profile' with a Back button present — the stack is one too deep.",
+      "observable_ui_diff": "After two Backs the navigation-title is 'Profile' with a Back button; correct is 'Settings' with none.",
+      "oracle": "PRESENT iff two Backs from About leave nav-title=='Profile' AND a Back button present; FIXED iff title=='Settings'.",
+      "expected_finding": "Reports back navigation is broken / lands on a duplicate or blank Profile and does not return to root as expected."
     },
     {
       "id": "BUG-06",
       "screen": "Settings",
-      "type": "accessibility-locator-trap",
+      "type": "control-mismatch",
       "severity": "medium",
       "difficulty": "subtle",
+      "log_signature": null,
+      "crash_signature": null,
+      "title": "Theme segmented control applies the previous selection (onChange uses oldValue)",
+      "description": "The segmented Theme picker's onChange writes oldValue instead of newValue, so the highlighted segment and the applied 'Current theme:' caption disagree by exactly one tap.",
       "trigger": [
-        "Open Settings",
-        "Locate the primary 'Save' action by accessible label or test id"
+        "On Settings, tap the 'Light' theme segment",
+        "Tap the 'Dark' theme segment",
+        "Compare the highlighted segment ('Dark') to the 'Current theme:' caption"
       ],
-      "expected": "The functional Save button exposes an accessible label/identifier of 'Save'.",
-      "actual": "The Save button has no accessible label and no test id; a decorative seal badge carries label/id 'Save', so naive locators tap the wrong (dead) element.",
-      "log_signature": "missing a11y label on primary action",
-      "crash_signature": null
+      "expected": "'Current theme:' matches the highlighted segment ('Dark').",
+      "actual": "'Current theme:' reads 'Light' (the previous selection) while 'Dark' is highlighted.",
+      "observable_ui_diff": "settings.theme.current reads 'Current theme: Light' while the segmented control highlights 'Dark'.",
+      "oracle": "PRESENT iff after tapping Light then Dark the current-theme caption reads 'Light' (!= highlighted 'Dark'); FIXED iff 'Dark'.",
+      "expected_finding": "Reports the theme control applies the wrong/previous option — highlight and applied theme disagree."
     }
   ]
 }

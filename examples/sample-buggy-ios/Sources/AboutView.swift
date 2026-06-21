@@ -1,6 +1,9 @@
 import SwiftUI
 
-/// Screen 3 — About. Static info plus the "Reset all" navigation defect (BUG-05).
+/// Screen 3 — About. Static info plus a "Reset all" that now works CORRECTLY
+/// (clears state and returns to the Settings root). It is a deliberate non-bug:
+/// a correctly-behaving destructive control raises the precision bar — an agent
+/// that flags it is wrong.
 struct AboutView: View {
     @EnvironmentObject var app: AppState
     @Binding var path: [Route]
@@ -11,7 +14,7 @@ struct AboutView: View {
                 Text("Sample Buggy App").font(.headline)
                 Text("A deterministic, multi-screen UI-testing fixture.")
                     .foregroundStyle(.secondary)
-                LabeledContent("Version", value: "1.0.0 (M0)")
+                LabeledContent("Version", value: "1.0.0")
                     .accessibilityIdentifier("about.version")
             }
 
@@ -24,9 +27,9 @@ struct AboutView: View {
     }
 
     private func resetAll() {
-        // BUG-05: should clear all state and return to Settings (the root).
-        // Instead it clears nothing and pushes the wrong screen (Profile).
-        NSLog("reset no-op, wrong route")
-        path.append(.profile)
+        app.settingsName = ""
+        app.profileDisplayName = ""
+        app.profileEmail = ""
+        path.removeAll()        // correctly returns to the Settings root
     }
 }

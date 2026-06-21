@@ -1,0 +1,65 @@
+{
+  "fixture": "sample-buggy-flutter",
+  "surface": "ios",
+  "framework": "flutter",
+  "bundle_id": "com.inspector.sampleBuggyFlutter",
+  "screens": [
+    "Counter"
+  ],
+  "notes": "Flutter renders to a canvas, so the iOS a11y tree is sparse \u2014 these bugs are caught by VISION grounding (OmniParser over the screenshot), not the a11y tree. All are visually observable in the counter screen.",
+  "scoring": "semantic",
+  "bugs": [
+    {
+      "id": "BUG-01",
+      "screen": "Counter",
+      "type": "logic",
+      "severity": "high",
+      "difficulty": "obvious",
+      "log_signature": null,
+      "title": "Plus increments by 2 instead of 1",
+      "description": "Tapping the 'Plus' button increases the displayed count by 2 each press instead of 1.",
+      "trigger": [
+        "From a count of 0, tap 'Plus' once",
+        "Read the count"
+      ],
+      "expected": "The count reads 1 after one Plus.",
+      "actual": "The count reads 2 after one Plus (increments by 2).",
+      "expected_finding": "Reports that the Plus button increments the counter by 2 (or by the wrong amount) instead of 1."
+    },
+    {
+      "id": "BUG-02",
+      "screen": "Counter",
+      "type": "logic",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "log_signature": null,
+      "title": "Reset sets the count to 1 instead of 0",
+      "description": "Tapping 'Reset' sets the counter to 1 rather than clearing it to 0.",
+      "trigger": [
+        "Tap 'Plus' a few times",
+        "Tap 'Reset'",
+        "Read the count"
+      ],
+      "expected": "Reset returns the count to 0.",
+      "actual": "Reset leaves the count at 1.",
+      "expected_finding": "Reports that Reset does not clear the counter to 0 (it shows 1)."
+    },
+    {
+      "id": "BUG-03",
+      "screen": "Counter",
+      "type": "control-mismatch",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "log_signature": null,
+      "title": "Subscribe switch label flips but the switch never moves",
+      "description": "Tapping the subscribe switch toggles its title text between 'Subscribed' and 'Not subscribed' visually inconsistently while the switch thumb never changes position \u2014 the control and its state disagree.",
+      "trigger": [
+        "Tap the subscribe switch",
+        "Compare the switch position to its label"
+      ],
+      "expected": "The switch turns on and the label reads 'Subscribed'.",
+      "actual": "The switch stays off (value never changes); the control does not reflect a subscribed state.",
+      "expected_finding": "Reports the subscribe toggle/switch does not actually change state when tapped."
+    }
+  ]
+}

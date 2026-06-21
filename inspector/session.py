@@ -35,6 +35,11 @@ class Session:
         self._verified_count = 0  # findings total at last verify(), to scope the signal
         self.images_returned = 0  # full SoM PNGs returned at the MCP boundary (cost cap)
         self._launch_error: str | None = None  # set by an async (background) launch
+        # Serialize all adapter access: the heartbeat thread and the action loop must
+        # never touch the (non-reentrant) transport — e.g. one CDP websocket — at once.
+        self._capture_lock = threading.Lock()
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
 
     # --- lifecycle ---
     def launch(self, dev_command: str | None = None) -> bool:
@@ -52,12 +57,46 @@ class Session:
             raise
         self.record.state = SessionState.READY if ready else SessionState.ERROR
         self.trace.save_session(self.record)
+        if ready:
+            self._start_heartbeat()
         return ready
 
     def teardown(self) -> None:
+        self._stop_heartbeat()
         self._safe_teardown()
         self.record.state = SessionState.TORN_DOWN
         self.trace.save_session(self.record)
+
+    # --- heartbeat: snapshot a frame on a timer so idle stretches still show up ---
+    def _start_heartbeat(self) -> None:
+        interval = self.config.heartbeat_screenshot_s
+        if not interval or interval <= 0 or self._heartbeat_thread is not None:
+            return
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, args=(interval,), daemon=True, name="inspector-heartbeat"
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        self._heartbeat_stop.set()
+        t = self._heartbeat_thread
+        if t is not None:
+            t.join(timeout=2.0)
+            self._heartbeat_thread = None
+
+    def _heartbeat_loop(self, interval: float) -> None:
+        # Event.wait doubles as the sleep + a prompt stop signal on teardown.
+        while not self._heartbeat_stop.wait(interval):
+            # Non-blocking: if an action holds the transport, just skip this tick.
+            if not self._capture_lock.acquire(blocking=False):
+                continue
+            try:
+                png = self.adapter.screenshot()
+                self.trace.save_frame(png)
+            except Exception:
+                pass  # a transient screenshot failure shouldn't kill the heartbeat
+            finally:
+                self._capture_lock.release()
 
     def _safe_teardown(self) -> None:
         try:
@@ -90,12 +129,15 @@ class Session:
         self.touch()
         self._keepalive()
         self.record.state = SessionState.INTERACTING
-        png = self.adapter.screenshot()
-        elements = self.detector.detect(png)
-        self.last_elements = elements
-        som = render_set_of_mark(png, elements)
-        self.trace.save_frame(som)
-        logs = self.adapter.logs()
+        with self._capture_lock:
+            png = self.adapter.screenshot()
+            elements = self.adapter.detect_elements(png)  # native a11y tree, if any
+            if elements is None:
+                elements = self.detector.detect(png)       # else OmniParser vision
+            self.last_elements = elements
+            som = render_set_of_mark(png, elements)
+            self.trace.save_frame(som)
+            logs = self.adapter.logs()
         self.trace.record_logs(logs)
         self._ingest_findings(logs)
         return som, elements, logs
@@ -112,42 +154,53 @@ class Session:
         self.guard.tick()
         self._keepalive()
         self.action_log.append(self._describe_action(action_type, target_id, text, key))
-        before = self.adapter.screenshot()
-        frame_before = self.trace.save_frame(before)
+        # Hold the capture lock across the whole adapter sequence so a heartbeat
+        # snapshot can't interleave on the (non-reentrant) transport mid-action.
+        with self._capture_lock:
+            before = self.adapter.screenshot()
+            frame_before = self.trace.save_frame(before)
 
-        try:
-            self.adapter.input(self._resolve(action_type, target_id, text, key, coords))
-            time.sleep(0.4)  # settle
-            after = self.adapter.screenshot()
-        except Exception as exc:
-            # record the failed step so the trace/re-run script stays complete
+            # Resolve the concrete click point now so the trace (and the replay cursor)
+            # records WHERE we acted — even for target_id clicks that carry no raw coords.
+            click_xy = coords
+            try:
+                input_action = self._resolve(action_type, target_id, text, key, coords)
+                if input_action.x is not None and input_action.y is not None:
+                    click_xy = [input_action.x, input_action.y]
+                self.adapter.input(input_action)
+                time.sleep(0.4)  # settle
+                after = self.adapter.screenshot()
+            except Exception as exc:
+                # record the failed step so the trace/re-run script stays complete
+                action = Action(
+                    seq=self.action_seq, type=action_type, target_id=target_id,
+                    coords=click_xy, text=text, key=key, result="error", changed=False,
+                    screenshot_before=frame_before, logs=[f"[inspector] action error: {exc}"],
+                )
+                self.trace.record_action(action)
+                self.action_seq += 1
+                raise
+
+            frame_after = self.trace.save_frame(after)
+            changed = before != after
+            logs = self.adapter.logs()
+            self.guard.observe_state(after, logs)
+            self.trace.record_logs(logs)
+            self._ingest_findings(logs)
+
             action = Action(
-                seq=self.action_seq, type=action_type, target_id=target_id,
-                coords=coords, text=text, key=key, result="error", changed=False,
-                screenshot_before=frame_before, logs=[f"[inspector] action error: {exc}"],
+                seq=self.action_seq, type=action_type, target_id=target_id, coords=click_xy,
+                text=text, key=key, result="ok" if changed else "no_change", changed=changed,
+                screenshot_before=frame_before, screenshot_after=frame_after, logs=logs,
             )
             self.trace.record_action(action)
             self.action_seq += 1
-            raise
 
-        frame_after = self.trace.save_frame(after)
-        changed = before != after
-        logs = self.adapter.logs()
-        self.guard.observe_state(after, logs)
-        self.trace.record_logs(logs)
-        self._ingest_findings(logs)
-
-        action = Action(
-            seq=self.action_seq, type=action_type, target_id=target_id, coords=coords,
-            text=text, key=key, result="ok" if changed else "no_change", changed=changed,
-            screenshot_before=frame_before, screenshot_after=frame_after, logs=logs,
-        )
-        self.trace.record_action(action)
-        self.action_seq += 1
-
-        elements = self.detector.detect(after)
-        self.last_elements = elements
-        som = render_set_of_mark(after, elements)
+            elements = self.adapter.detect_elements(after)  # native a11y tree, if any
+            if elements is None:
+                elements = self.detector.detect(after)       # else OmniParser vision
+            self.last_elements = elements
+            som = render_set_of_mark(after, elements)
         return som, changed, logs
 
     def audit(self) -> tuple[dict, list[str]]:
@@ -162,7 +215,8 @@ class Session:
 
         self.touch()
         try:
-            audit = self.adapter.audit_dom()
+            with self._capture_lock:
+                audit = self.adapter.audit_dom()
         except Exception:
             audit = {}
         new_ids: list[str] = []
@@ -247,18 +301,28 @@ class SessionManager:
         self._lock = threading.RLock()
         self._reaper: threading.Thread | None = None
 
-    def create(self, repo_path: str, surface: Surface | None = None, goal: str = "") -> Session:
+    def create(
+        self, repo_path: str, surface: Surface | None = None, goal: str = "",
+        alias: str | None = None,
+    ) -> Session:
         if surface is None:
             surface = detect_project(repo_path).surface
         session = Session(repo_path, surface, self.config, goal)
+        session.record.alias = alias or None
         with self._lock:
             self.sessions[session.record.id] = session
         self._ensure_reaper()
         return session
 
     def get(self, session_id: str) -> Session:
+        """Resolve a live session by its id OR its human alias."""
         with self._lock:
             session = self.sessions.get(session_id)
+            if session is None:  # fall back to alias lookup
+                session = next(
+                    (s for s in self.sessions.values() if s.record.alias == session_id),
+                    None,
+                )
         if session is None:
             raise KeyError(f"no session {session_id!r}")
         session.touch()  # a tool call is activity — keep it off the reaper's list

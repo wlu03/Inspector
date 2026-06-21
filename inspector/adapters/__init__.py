@@ -34,6 +34,10 @@ def get_adapter(surface: Surface, config: Config, repo_path: str | None = None) 
     if config.execution == "local" and surface == Surface.ELECTRON:
         from .local_electron import LocalElectronAdapter
         return LocalElectronAdapter(config)
+    # Native macOS apps are local-only (AX tree + CGEvent on the host).
+    if surface == Surface.MACOS:
+        from .macos_native import MacNativeAdapter
+        return MacNativeAdapter(config)
     return REGISTRY[surface](config)
 
 

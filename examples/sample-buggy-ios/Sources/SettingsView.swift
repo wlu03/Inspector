@@ -1,13 +1,18 @@
 import SwiftUI
 
-/// Screen 1 — Settings. Hosts the original Save crash (BUG-01), the desynced
-/// Notifications toggle (BUG-02), the a11y locator trap on Save (BUG-06), and
-/// a fully-working Theme picker for contrast.
+/// Screen 1 — Settings. Three subtle, log-free defects:
+///   BUG-02 input-edge: Save Int-normalizes the name, silently dropping leading
+///          zeros ("007" -> "7") while the green "Saved" still claims success.
+///   BUG-03 display-format: the character counter is off-by-one (boundary-safe, so
+///          the empty field reads a correct-looking "0/30" with no first-paint tell).
+///   BUG-06 control-mismatch: the segmented Theme picker's onChange applies the
+///          PREVIOUS selection, so the highlighted segment and the "Current theme:"
+///          caption disagree by one tap.
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
 
-    @State private var savedConfirmation = ""        // stays empty: BUG-01 crashes first
-    @State private var notificationsLabelOn = false  // BUG-02: label-only flag
+    @State private var savedConfirmation = ""
+    @State private var themeSelection: AppTheme = .system
 
     var body: some View {
         Form {
@@ -15,51 +20,35 @@ struct SettingsView: View {
                 TextField("Your name", text: $app.settingsName)
                     .accessibilityIdentifier("settings.name.field")
 
-                HStack {
-                    // Real, functional Save button — but BUG-06 ships it with NO
-                    // accessible name and NO test id.
-                    Button(action: save) {
-                        Label("Save", systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(Text(""))     // primary action has no a11y name
-                    // (intentionally no .accessibilityIdentifier)
+                // BUG-03: off-by-one, but max(0,…) keeps the empty case at "0/30"
+                // so there is no first-paint giveaway — only typing exposes it.
+                Text("\(max(0, app.settingsName.count - 1))/30")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("settings.name.counter")
 
-                    Spacer()
-
-                    // Decorative badge that wrongly owns the obvious "Save" locator,
-                    // so naive label/id lookups tap this dead element instead.
-                    Image(systemName: "checkmark.seal")
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("save")
-                        .accessibilityLabel("Save")
-                        .accessibilityAddTraits(.isButton)
-                }
+                Button("Save", action: save)
+                    .accessibilityIdentifier("settings.save.button")
 
                 Text(savedConfirmation)
                     .foregroundColor(.green)
                     .accessibilityIdentifier("settings.savedConfirmation")
             }
 
-            Section("Preferences") {
-                // BUG-02: the toggle flips its own visual label but never writes
-                // through to app.notificationsEnabled — underlying state desyncs.
-                Toggle(isOn: Binding(
-                    get: { notificationsLabelOn },
-                    set: { _ in
-                        NSLog("toggle state desync")
-                        notificationsLabelOn.toggle()
-                        // app.notificationsEnabled is intentionally left unchanged.
-                    }
-                )) {
-                    Text("Notifications \(notificationsLabelOn ? "On" : "Off")")
-                }
-                .accessibilityIdentifier("settings.notifications.toggle")
-
-                Picker("Theme", selection: $app.theme) {
+            Section("Appearance") {
+                Picker("Theme", selection: $themeSelection) {
                     ForEach(AppTheme.allCases) { Text($0.rawValue).tag($0) }
                 }
+                .pickerStyle(.segmented)
                 .accessibilityIdentifier("settings.theme.picker")
+                .onChange(of: themeSelection) { oldValue, _ in
+                    // BUG-06: applies the PREVIOUS selection (oldValue) instead of the
+                    // new one — the textbook onChange(old,new) swap.
+                    app.theme = oldValue
+                }
+
+                Text("Current theme: \(app.theme.rawValue)")
+                    .accessibilityIdentifier("settings.theme.current")
             }
 
             Section {
@@ -68,17 +57,15 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
-        .onAppear {
-            // BUG-06: the primary action (Save) renders without an accessible label.
-            NSLog("missing a11y label on primary action")
-        }
     }
 
     private func save() {
-        // BUG-01: log, then crash before the confirmation is ever shown.
-        NSLog("query not invalidated after save")
-        let items: [String] = []
-        _ = items[5]                  // Fatal error: Index out of range
-        savedConfirmation = "Saved"   // unreachable
+        // BUG-02: "normalize" the name as if it were a numeric id — drops leading
+        // zeros. The field is bound to $app.settingsName, so the mutated value
+        // re-renders straight back into the field while "Saved" still appears.
+        if let n = Int(app.settingsName) {
+            app.settingsName = String(n)        // "007" -> "7"
+        }
+        savedConfirmation = "Saved"             // honeypot: always claims success
     }
 }

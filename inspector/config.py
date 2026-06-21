@@ -73,6 +73,29 @@ class Config:
     # default; override with INSPECTOR_DRIVER_MODEL (e.g. claude-haiku-4-5 = cheapest).
     driver_model: str = "claude-sonnet-4-6"
 
+    # macOS/iOS plane (tart VM). If macos_host is set, connect to an already-running
+    # Mac/guest over SSH and skip tart (dev: localhost). Else tart clones the golden image.
+    macos_host: str | None = None
+    macos_user: str = "admin"
+    macos_ssh_key: str | None = None
+    macos_base_image: str = "ghcr.io/cirruslabs/macos-sequoia-xcode:latest"
+    macos_ios_udid: str | None = None
+    # idb client binary. fb-idb breaks on Python 3.14 (asyncio.get_event_loop removed),
+    # so point this at a py3.10-3.12 venv's idb: INSPECTOR_IDB_BIN=/path/idbvenv/bin/idb.
+    ios_idb_bin: str = "idb"
+    # Native macOS app to drive (name or bundle id) for Surface.MACOS — e.g. "Calculator".
+    macos_app: str | None = None
+    # flutter binary for Flutter iOS builds. The adapter runs build commands via a
+    # login shell that may not have ~/flutter/bin on PATH — point this at it directly:
+    # INSPECTOR_FLUTTER_BIN=/Users/you/flutter/bin/flutter.
+    flutter_bin: str = "flutter"
+
+    # Where mobile/desktop/native surfaces run: "local" = THIS host directly (no VM,
+    # uses the local toolchains — simctl/idb, adb+emulator); "vm" = the tart/Redroid
+    # planes. Local has no sandbox isolation (the app runs with your privileges) but
+    # is far lighter. Web/Electron use the E2B Linux sandbox independently of this.
+    execution: str = "local"
+
     # Sandbox
     sandbox_resolution: tuple[int, int] = (1280, 800)
     sandbox_timeout_s: int = 3600
@@ -90,6 +113,10 @@ class Config:
     max_iterations: int = 30
     max_wall_clock_s: int = 1800
 
+    # Heartbeat capture: snapshot a frame every N seconds in the background so the
+    # replay timeline stays dense even while the agent is idle/thinking. 0 disables.
+    heartbeat_screenshot_s: float = 5.0
+
     # Session reaper: tear a session down after this many seconds with no tool
     # activity, or once it's older than sandbox_timeout_s (the sandbox dies anyway).
     # 0 disables the reaper. Guards against a host that crashes/forgets stop().
@@ -99,6 +126,15 @@ class Config:
     # Host token cost: cap full SoM PNGs returned per session at the MCP boundary
     # (0 = unlimited). Past the cap, observe/act return the text element list only.
     max_images_per_session: int = 0
+
+    # Local dashboard server: the port the MCP serves ~/.inspector/sessions on so a
+    # finished test returns a clickable http://127.0.0.1:<port>/dashboard.html link.
+    # Falls back to an ephemeral port if this one is taken.
+    dashboard_port: int = 7321
+
+    # Fire an OS desktop notification (with the dashboard link) when an autonomous
+    # run finishes — nobody's watching the chat. Best-effort; set 0 to disable.
+    notify: bool = True
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -113,9 +149,23 @@ class Config:
             driver_backend=_env("INSPECTOR_DRIVER", "LOOPBACK_DRIVER", default="replicate") or "replicate",
             driver_model=_env("INSPECTOR_DRIVER_MODEL", "LOOPBACK_DRIVER_MODEL",
                               default="claude-sonnet-4-6") or "claude-sonnet-4-6",
+            macos_host=_env("INSPECTOR_MACOS_HOST", "LOOPBACK_MACOS_HOST"),
+            macos_user=_env("INSPECTOR_MACOS_USER", "LOOPBACK_MACOS_USER", default="admin") or "admin",
+            macos_ssh_key=_env("INSPECTOR_MACOS_SSH_KEY", "LOOPBACK_MACOS_SSH_KEY"),
+            macos_base_image=_env("INSPECTOR_MACOS_IMAGE", "LOOPBACK_MACOS_IMAGE",
+                                  default="ghcr.io/cirruslabs/macos-sequoia-xcode:latest")
+            or "ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
+            macos_ios_udid=_env("INSPECTOR_IOS_UDID", "LOOPBACK_IOS_UDID"),
+            ios_idb_bin=_env("INSPECTOR_IDB_BIN", "LOOPBACK_IDB_BIN", default="idb") or "idb",
+            macos_app=_env("INSPECTOR_MACOS_APP", "LOOPBACK_MACOS_APP"),
+            flutter_bin=_env("INSPECTOR_FLUTTER_BIN", "LOOPBACK_FLUTTER_BIN", default="flutter") or "flutter",
+            execution=_env("INSPECTOR_EXECUTION", "LOOPBACK_EXECUTION", default="local") or "local",
             driver_ref=_env("INSPECTOR_DRIVER_REF", "LOOPBACK_DRIVER_REF", default=DEFAULT_DRIVER_REF) or DEFAULT_DRIVER_REF,
             sandbox_template=os.getenv("E2B_TEMPLATE"),
             session_idle_ttl_s=int(_env("INSPECTOR_SESSION_IDLE_TTL", "LOOPBACK_SESSION_IDLE_TTL", default="600") or "600"),
             reaper_interval_s=int(_env("INSPECTOR_REAPER_INTERVAL", "LOOPBACK_REAPER_INTERVAL", default="60") or "60"),
             max_images_per_session=int(_env("INSPECTOR_MAX_IMAGES", "LOOPBACK_MAX_IMAGES", default="0") or "0"),
+            dashboard_port=int(_env("INSPECTOR_DASHBOARD_PORT", "LOOPBACK_DASHBOARD_PORT", default="7321") or "7321"),
+            heartbeat_screenshot_s=float(_env("INSPECTOR_HEARTBEAT_S", "LOOPBACK_HEARTBEAT_S", default="5") or "5"),
+            notify=(_env("INSPECTOR_NOTIFY", "LOOPBACK_NOTIFY", default="1") or "1") not in ("0", "false", "no", ""),
         )

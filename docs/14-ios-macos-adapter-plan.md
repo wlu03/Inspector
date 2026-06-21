@@ -1,5 +1,8 @@
 # iOS + macOS-native Adapter — Build Plan
 
+> ⚡ **Update — local-first execution (default).** `config.execution="local"` (the default) runs iOS/Android/desktop/native surfaces **directly on the host** (subprocess, host toolchains, no upload), not in a VM. `MacOSPlane(local=True)` runs `simctl`/`idb` via subprocess; `IOSAdapter` builds in place. Trade-off: no sandbox isolation (the app runs with your privileges — fine for your own dev builds); benefit: no 30GB tart image, far lighter setup. Set `execution="vm"` to use the tart plane below. The VM plane (this doc) remains the isolated/CI path. Local iOS still needs `idb` + one iOS runtime installed locally (~7GB), but no tart.
+
+
 > Two adapters on **one** tart macOS VM. `Surface.IOS` (the milestone) is a single kit-parameterized adapter over the iOS Simulator. `Surface.MACOS` is a follow-up native-AppKit/SwiftUI adapter reusing the same VM. Grounding is **hybrid** (native accessibility tree primary, OmniParser SoM fallback) wired through **one** new optional hook so the loop/driver/SoM/MCP never branch on surface — clicks always go through pixels, preserving pure-computer-use.
 
 ## Decisive answers (the crux)

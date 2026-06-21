@@ -20,6 +20,7 @@ class Surface(str, Enum):
     ELECTRON = "electron"
     ANDROID = "android"
     IOS = "ios"
+    MACOS = "macos"  # native AppKit/SwiftUI Mac apps (AX tree + CGEvent, local only)
 
 
 class SessionState(str, Enum):
@@ -139,6 +140,7 @@ class SessionRecord(BaseModel):
     surface: Surface
     dev_command: str | None = None
     goal: str = ""
+    alias: str | None = None  # optional human name (e.g. "checkout-flow") for links/dashboard
     state: SessionState = SessionState.CREATED
     task_id: str | None = None
     trace_id: str = Field(default_factory=lambda: new_id("trc"))
