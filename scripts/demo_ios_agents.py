@@ -20,13 +20,19 @@ from inspector.replay import write_replay_html, write_replay_video
 from inspector.session import SessionManager
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-STEPS = int(sys.argv[2]) if len(sys.argv) > 2 else 6
+STEPS = int(sys.argv[2]) if len(sys.argv) > 2 else 12   # deeper traversal needs more budget
 REPO = "examples/sample-buggy-ios"
+# Deep, multi-step flows (not single taps) — each one ENTERS a screen, completes a
+# sequence, then re-enters / backs out to expose state bugs the surface-level taps miss.
 GOALS = [
-    "Explore the wishlist home: add a new item and watch the count.",
-    "Open Wish Details, fill the item name + price, tap Continue, then go back.",
-    "Change the appearance theme and confirm the 'Current theme' caption.",
-    "Open About and try Clear wishlist; check it returns to the wishlist.",
+    "Open Wish Details, fill EVERY field (item name, price, note), tap Continue, then go "
+    "Back and RE-OPEN Wish Details — verify the fields still show what you typed.",
+    "On the home screen add an item with a numeric name like '007', then check the field "
+    "AND the saved item show exactly '007' (not '7'); watch the character counter as you type.",
+    "Set the theme to Dark, navigate into another screen and back, and verify the "
+    "'Current theme' caption matches the highlighted segment.",
+    "Open Wish Details, fill 1 then 2 then 3 fields and read the completeness % each time, "
+    "then tap Continue and press Back twice — note which screen you land on.",
 ]
 cfg = Config.from_env()
 

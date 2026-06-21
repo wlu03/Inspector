@@ -45,10 +45,14 @@ _SYSTEM = (
     "error toast or console error, an action that did nothing when it should have, a "
     "wrong screen, a missing element, layout overflow), report it in `bug`. When the app "
     "has been adversarially exercised enough to judge it, choose action \"done\".\n"
-    "EXPLORE FOR BREADTH: never repeat an action that already returned changed=false in "
-    "ACTIONS SO FAR — it will not work the second time. When an action does nothing, MOVE "
-    "ON to a different element or screen. Cover every screen (navigate via the tab/nav "
-    "elements) and try each control once before going deep on any one."
+    "EXPLORE WIDE AND DEEP: never repeat an action that already returned changed=false in "
+    "ACTIONS SO FAR — it will not work the second time. Cover every screen (navigate via "
+    "the tab/nav elements), but also go DEEP: when a screen has a form or a multi-step "
+    "flow, COMPLETE it end-to-end — fill EVERY field, submit/continue, read the result — "
+    "then navigate AWAY and RE-ENTER the same screen to check whether the state persisted. "
+    "The subtlest bugs (lost edits, stale or normalized values, wrong screen after Back, "
+    "a counter/total that's off) only surface after a SPECIFIC multi-step sequence, not a "
+    "single tap. Push several levels into nested navigation before backing out."
 )
 
 _PROTOCOL = (
