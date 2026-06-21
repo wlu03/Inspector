@@ -101,6 +101,14 @@ def test_logs_filters_blank_lines():
     assert a.logs() == ["F/libc: Fatal signal 11", "I/Chatty: ok"]
 
 
+def test_wake_keeps_screen_on():
+    a = _adapter()
+    a._wake()
+    assert "svc power stayon true" in a.adb.calls
+    assert any("KEYCODE_WAKEUP" in c for c in a.adb.calls)
+    assert any("dismiss-keyguard" in c for c in a.adb.calls)
+
+
 # --- parsers (pure) ---
 
 def test_keycode_known_and_numeric_and_unknown():

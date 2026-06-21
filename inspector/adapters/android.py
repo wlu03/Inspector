@@ -52,7 +52,8 @@ class AndroidAdapter(SurfaceAdapter):
         self.adb = self.adb or self._make_transport(serial)
         self.adb.wait_for_device()
 
-        # 3) install + launch; clear logcat so logs() returns only post-launch lines
+        # 3) keep the screen awake, install + launch; clear logcat first
+        self._wake()
         self.adb.install(build.apk_path)
         self.adb.shell("logcat -c")
         self.adb.shell(f"am start -n {self.package}/{self.activity}")
@@ -62,10 +63,18 @@ class AndroidAdapter(SurfaceAdapter):
         while time.time() < deadline:
             out = self.adb.shell("dumpsys activity activities | grep -E 'mResumedActivity|ResumedActivity'")
             if self.package and self.package in out:
-                time.sleep(1.0)  # let the first frame paint
+                self._wake()        # display ON before the first screencap
+                time.sleep(1.0)     # let the first frame paint
                 return True
             time.sleep(1.0)
         return False
+
+    def _wake(self) -> None:
+        """Keep the display on + unlocked so screencap never returns an empty (asleep)
+        frame — the failure that made OmniParser reject the image. Idempotent."""
+        self.adb.shell("svc power stayon true")
+        self.adb.shell("input keyevent KEYCODE_WAKEUP")
+        self.adb.shell("wm dismiss-keyguard")
 
     # --- eyes ---
     def screenshot(self) -> bytes:
