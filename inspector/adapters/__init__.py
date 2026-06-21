@@ -34,6 +34,13 @@ def get_adapter(surface: Surface, config: Config, repo_path: str | None = None) 
     if config.execution == "local" and surface == Surface.ELECTRON:
         from .local_electron import LocalElectronAdapter
         return LocalElectronAdapter(config)
+    # Local web via headless Chrome — opt-in when a URL or prebuilt dist is configured
+    # (for real apps like Angular/Capacitor that don't fit the E2B build-and-serve path).
+    import os as _os
+    if (config.execution == "local" and surface == Surface.WEB
+            and (_os.environ.get("INSPECTOR_WEB_URL") or _os.environ.get("INSPECTOR_WEB_DIST"))):
+        from .local_web import LocalWebAdapter
+        return LocalWebAdapter(config)
     # Native macOS apps are local-only (AX tree + CGEvent on the host).
     if surface == Surface.MACOS:
         from .macos_native import MacNativeAdapter
