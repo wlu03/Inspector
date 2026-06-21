@@ -9,19 +9,51 @@ silicon, designed for CI.
   Apple-silicon host). Apple licensing allows **max 2 macOS VMs per host**.
 - `brew install cirruslabs/cli/tart`
 
-## Provision
+## Quick start
+
 ```bash
-./setup.sh                       # clones a macOS+Xcode image, boots it, prints the IP
-```
-Then, inside the VM (the cirruslabs images use user `admin` / password `admin`):
-```bash
-ssh admin@<vm-ip>
-xcodebuild -downloadPlatform iOS         # the iOS Simulator runtime (~7GB, on-demand)
-brew install idb-companion && pip3 install fb-idb
+# 1. Clone + boot the macOS VM (one-time ~60GB download)
+./setup.sh
+
+# 2. Provision the VM (install iOS runtime + idb + xcodegen)
+scp -o StrictHostKeyChecking=no provision-vm.sh admin@<vm-ip>:/tmp/
+ssh admin@<vm-ip> 'bash /tmp/provision-vm.sh'
+
+# 3. Set the env var and run the demo
+export LOOPBACK_MACOS_HOST=<vm-ip>
+python scripts/demo_ios.py
 ```
 
-## Drive it (what the iOS adapter does over SSH)
+## Scripts
+
+| Script | What it does |
+|---|---|
+| `setup.sh` | Clones the base image, boots the VM headless, waits for SSH, prints the IP |
+| `provision-vm.sh` | Run inside the VM — installs iOS Simulator runtime, idb, xcodegen |
+| `status.sh` | Health check — VM state, SSH, Xcode, runtimes, simulators |
+
+## How it works
+
+```
+Your Mac (host)
+  │
+  ├── tart run --no-graphics inspector-ios
+  │     └── macOS VM (guest)
+  │           ├── Xcode + iOS Simulator
+  │           ├── idb (input: tap/type/swipe)
+  │           └── simctl (boot/install/launch/screenshot/logs)
+  │
+  ├── Inspector MCP server
+  │     ├── MacOSPlane (SSH into the VM)
+  │     └── IOSAdapter (simctl + idb commands)
+  │
+  └── Claude Code / Cursor (MCP client)
+        └── launch_app → observe → act → verify → stop
+```
+
+## Drive it manually (what the iOS adapter does over SSH)
 ```bash
+ssh admin@<vm-ip>
 xcrun simctl boot <UDID>; xcrun simctl bootstatus <UDID> -b
 xcrun simctl install booted MyApp.app
 xcrun simctl launch --console-pty booted com.inspector.SampleBuggyApp
@@ -33,7 +65,16 @@ xcrun simctl spawn booted log stream --predicate 'processImagePath endswith "Sam
 ## Code
 - `inspector/planes/macos.py` (`MacOSPlane` — SSH transport into the VM)
 - `inspector/adapters/ios.py` (`IOSAdapter`) — task #10
+- `scripts/demo_ios.py` — end-to-end demo script
 - Sample app: [`../../examples/sample-buggy-ios/`](../../examples/sample-buggy-ios/)
+
+## VM lifecycle
+```bash
+tart run --no-graphics inspector-ios &   # boot
+tart ip inspector-ios                    # get IP
+tart stop inspector-ios                  # stop
+tart delete inspector-ios                # remove (frees ~60GB)
+```
 
 ## Note
 The iOS Simulator is a macOS process against iOS frameworks; it is **not** a real
