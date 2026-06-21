@@ -7,6 +7,19 @@ the MCP uses and serves the trace root.
 
     python scripts/serve_dashboard.py     # prints a localhost URL; open replays from it
 """
+import os
+import sys
+
+# Auto-bootstrap: if `inspector` isn't importable (ran with the system python instead of
+# the project venv), re-exec this script with the venv's python so it just works.
+try:
+    import inspector  # noqa: F401
+except ModuleNotFoundError:
+    _venv_py = os.path.join(os.path.dirname(__file__), "..", ".venv", "bin", "python")
+    if os.path.exists(_venv_py) and os.path.realpath(sys.executable) != os.path.realpath(_venv_py):
+        os.execv(_venv_py, [_venv_py, *sys.argv])
+    raise
+
 import time
 
 from inspector import server as mcp          # has _dashboard_action + _live_sessions
