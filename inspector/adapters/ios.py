@@ -157,6 +157,33 @@ def parse_describe_all(describe_all_json: str, w_pts: int, h_pts: int) -> list[E
     return out
 
 
+def describe_value_at(describe_all_json: str, index: int) -> dict:
+    """The AXValue/AXLabel of the element at `index` (same filter/order as
+    parse_describe_all) — the live VALUE for the input-integrity oracle. Pure."""
+    try:
+        nodes = json.loads(describe_all_json)
+    except Exception:
+        return {}
+    if not isinstance(nodes, list):
+        return {}
+    valid = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        frame = _frame_of(node)
+        if frame is None or frame[2] <= 0 or frame[3] <= 0:
+            continue
+        valid.append(node)
+    if 0 <= index < len(valid):
+        n = valid[index]
+        return {
+            "value": str(n.get("AXValue") or ""),
+            "label": str(n.get("AXLabel") or ""),
+            "role": str(n.get("type") or n.get("role") or ""),
+        }
+    return {}
+
+
 def _iou(a: list[float], b: list[float]) -> float:
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
@@ -352,6 +379,16 @@ class IOSAdapter(SurfaceAdapter):
             return []
         w, h = self._point_size
         return [e.label for e in parse_describe_all(r.stdout, w, h) if e.interactivity and e.label]
+
+    def control_state(self, element_id: int) -> dict:
+        """Live AXValue/AXLabel of the element at element_id — the read-back source for
+        the input-integrity oracle (e.g. typed '007', field holds '7')."""
+        if not self.udid:
+            return {}
+        r = self.plane.run_sync(f"{self._idb} ui describe-all --udid {self.udid} --json", timeout=30)
+        if r is None or not (r.stdout or "").strip():
+            return {}
+        return describe_value_at(r.stdout, element_id)
 
     def logs(self) -> list[str]:
         r = self.plane.run_sync(f"cat {self.LOG_FILE} 2>/dev/null || true", timeout=15)

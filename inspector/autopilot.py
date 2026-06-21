@@ -117,6 +117,11 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
             acted.add(decision.target_id)
         if not changed:
             tried_noop.add(sig)
+        # input-integrity oracle: after typing, read the field back — a mismatch means
+        # the app mangled the value (e.g. typed "007", field holds "7"). Catches the
+        # subtle logless input-edge bugs (the iOS a11y-state class).
+        if decision.action == "type" and decision.text and len(decision.text.strip()) >= 2:
+            _check_input_integrity(session, decision)
         history.append(_step(steps, decision, label, changed=changed))
         steps += 1
 
@@ -220,6 +225,32 @@ def collect_findings(session) -> list[dict]:
             except Exception:
                 continue
     return out
+
+
+def _check_input_integrity(session, decision) -> None:
+    """Type → read-back: flag when a field holds something other than what was typed."""
+    try:
+        st = session.adapter.control_state(decision.target_id) or {}
+    except Exception:
+        return
+    val = str(st.get("value") or "")
+    typed = (decision.text or "").strip()
+    # only flag when the field exposes a value AND it doesn't contain what we typed
+    # (an empty value = field doesn't surface its contents → can't tell, skip).
+    if not val or typed in val:
+        return
+    finding = build_finding(
+        session_id=session.record.id,
+        trace_id=session.record.trace_id,
+        summary=f"Input value mismatch: typed {typed!r} but the field holds {val!r}",
+        expected=f"the field to contain {typed!r}",
+        actual=f"the field holds {val!r}",
+        suspected_area="(input-integrity oracle)",
+        severity=Severity.MEDIUM,
+        screenshot_refs=[_latest_frame(session)] if _latest_frame(session) else [],
+    )
+    session.trace.save_finding(finding)
+    session.record.findings.append(finding.id)
 
 
 def _next_unvisited(elements, acted: set[int]) -> int | None:
