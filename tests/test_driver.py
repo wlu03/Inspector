@@ -1,7 +1,7 @@
 """Pure tests for the autopilot brain + loop — no sandbox, no Replicate."""
 from __future__ import annotations
 
-from inspector.autopilot import run_autopilot
+from inspector.autopilot import _is_superficial_mismatch, run_autopilot
 from inspector.driver import DONE, Decision, build_decision_prompt, parse_decision
 from inspector.loop import LoopGuard
 from inspector.models import ActionType, Element
@@ -154,3 +154,59 @@ def test_loop_survives_driver_exception():
     session = _FakeSession([_el(0)])
     report = run_autopilot(session, _BoomDriver(), goal="test")
     assert report["stop_reason"] == "model_done"  # recovered, then finished
+
+
+# --- superficial mismatch guard ---
+
+def test_superficial_mismatch_suppresses_quote_style_diff():
+    bug = {
+        "summary": "Input value mismatch: typed and read differ",
+        "expected": 'the field to contain "<script>alert(\'XSS\')</script>"',
+        "actual": "the field holds '<script>alert('XSS')</script>'",
+    }
+    history = [{"action": "type", "text": "<script>alert('XSS')</script>"}]
+    assert _is_superficial_mismatch(bug, history) is True
+
+
+def test_superficial_mismatch_ignores_real_encoding_diff():
+    bug = {
+        "summary": "Input value mismatch: typed and read differ",
+        "expected": 'the field to contain "<script>alert(1)</script>"',
+        "actual": "the field holds '&lt;script&gt;alert(1)&lt;/script&gt;'",
+    }
+    history = [{"action": "type", "text": "<script>alert(1)</script>"}]
+    assert _is_superficial_mismatch(bug, history) is False
+
+
+def test_superficial_mismatch_ignores_non_mismatch_bugs():
+    bug = {"summary": "Save button crashes the app", "expected": "saved", "actual": "crash"}
+    history = [{"action": "click"}]
+    assert _is_superficial_mismatch(bug, history) is False
+
+
+def test_superficial_mismatch_ignores_no_typed_text():
+    bug = {
+        "summary": "Input value mismatch",
+        "expected": "some value",
+        "actual": "some value",
+    }
+    history = [{"action": "click"}]
+    assert _is_superficial_mismatch(bug, history) is False
+
+
+def test_loop_suppresses_superficial_mismatch_finding():
+    session = _FakeSession([_el(0, "name field", role="text")])
+    xss = "<script>alert('XSS')</script>"
+    driver = _ScriptedDriver([
+        Decision(action="type", target_id=0, text=xss,
+                 reason="adversarial input"),
+        Decision(action=DONE, bug={
+            "summary": "Input value mismatch: typed and read differ",
+            "expected": f'the field to contain "{xss}"',
+            "actual": f"the field holds '{xss}'",
+            "severity": "medium",
+        }),
+    ])
+    run_autopilot(session, driver, goal="test")
+    assert len(session.trace.saved) == 0
+    assert session.record.findings == []

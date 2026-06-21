@@ -135,10 +135,44 @@ def _safe_decide(driver, som, elements, goal, history, logs) -> Decision:
         return Decision(action="wait", reason=f"driver error: {exc}")
 
 
+def _is_superficial_mismatch(bug: dict, history: list[dict]) -> bool:
+    """True when a brain-reported input 'mismatch' is just a quote-style
+    difference in the assertion representation, not a real value difference.
+
+    The brain sometimes wraps the same field value in double quotes in
+    ``expected`` and single quotes in ``actual`` (or vice-versa), then
+    reports an input-value mismatch that is purely representational.  We
+    cross-check against the most recently typed text from the action history:
+    if that exact text appears verbatim in both expected and actual, the
+    values are identical and the finding is suppressed.
+    """
+    summary = str(bug.get("summary", "")).lower()
+    if "mismatch" not in summary:
+        return False
+
+    typed_text = None
+    for h in reversed(history):
+        if h.get("action") == "type" and h.get("text"):
+            typed_text = h["text"]
+            break
+
+    if not typed_text:
+        return False
+
+    expected = str(bug.get("expected", ""))
+    actual = str(bug.get("actual", ""))
+
+    return typed_text in expected and typed_text in actual
+
+
 def _record_bug(
     session, decision: Decision, history: list[dict], frame_ref: str | None
 ) -> None:
     bug = decision.bug or {}
+
+    if _is_superficial_mismatch(bug, history):
+        return
+
     severity = _SEVERITY.get(str(bug.get("severity", "")).lower(), Severity.MEDIUM)
     # repro = the trail of actions that led here (last few steps), human-readable.
     repro = [
