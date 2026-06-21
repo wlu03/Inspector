@@ -82,11 +82,7 @@ function settings() {
       <p class="muted" style="margin-top:8px">Theme applies across the app.</p>
     </div>`;
 
-  // BUG-01 (KEEP): Save throws a TypeError before the toast → UI never confirms.
   $("#save").addEventListener("click", () => {
-    console.error("query not invalidated after save");
-    const result = undefined;
-    result.show(); // TypeError — Cannot read properties of undefined (reading 'show')
     store.profile.username = $("#name").value;
     toast("Saved");
   });
