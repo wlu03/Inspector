@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import itertools
 import os
 import subprocess
 import time
 
 from .linux import LinuxPlane
+
+# Even console ports (5554, 5556, …) handed out one-per-emulator so parallel instances
+# don't collide. adb claims port+1, hence the step of 2.
+_emu_port_seq = itertools.count(5554, 2)
 
 # --- local Android Emulator (AVD) — the default, runs on THIS machine ---
 
@@ -24,18 +29,21 @@ def _sdk_bin(*parts: str) -> str:
 
 
 def emulator_argv(emulator_bin: str, avd: str, port: int = 5554,
-                  headless: bool = True) -> list[str]:
+                  headless: bool = True, read_only: bool = True) -> list[str]:
     """Args to boot an ephemeral AVD with adb on a fixed port. Pure.
 
     headless=True adds `-no-window` so NO emulator window appears (screencap still
     works — the framebuffer is rendered regardless). Set INSPECTOR_SHOW_EMULATOR=1 to
-    watch it instead.
+    watch it instead. read_only=True lets MULTIPLE emulators boot from one AVD at once
+    (the parallel/multi-agent fan-out) with a fresh ephemeral data partition each.
     """
     argv = [
         emulator_bin, "-avd", avd, "-port", str(port),
         "-no-snapshot-save", "-no-boot-anim", "-no-audio",
         "-gpu", "swiftshader_indirect",   # software GL — works headless on any Mac
     ]
+    if read_only:
+        argv.append("-read-only")         # share one AVD across parallel instances
     if headless:
         argv.append("-no-window")
     return argv
@@ -60,11 +68,13 @@ class LocalEmulatorRuntime:
     `start`/`stop` shell out to the local SDK.
     """
 
-    def __init__(self, config, avd: str | None = None, port: int = 5554):
+    def __init__(self, config, avd: str | None = None, port: int | None = None):
         self.config = config
         self.avd = avd or getattr(config, "android_avd", None)
-        self.port = port
-        self.serial = f"emulator-{port}"
+        # Even console ports, unique per instance (adb uses port+1), so multiple
+        # emulators coexist in a parallel/multi-agent run instead of colliding on 5554.
+        self.port = port if port is not None else next(_emu_port_seq)
+        self.serial = f"emulator-{self.port}"
         self._proc: subprocess.Popen | None = None
 
     def start(self) -> str:
