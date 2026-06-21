@@ -13,6 +13,7 @@ struct WishlistView: View {
     @EnvironmentObject var app: AppState
 
     @State private var addedConfirmation = ""
+    @State private var validationError = ""
     @State private var themeSelection: AppTheme = .system
 
     var body: some View {
@@ -55,6 +56,12 @@ struct WishlistView: View {
                     Label("Add", systemImage: "plus.circle.fill")
                 }
                 .accessibilityIdentifier("settings.save.button")
+
+                if !validationError.isEmpty {
+                    Text(validationError)
+                        .foregroundColor(.red)
+                        .accessibilityIdentifier("settings.validationError")
+                }
 
                 Text(addedConfirmation)
                     .foregroundColor(.green)
@@ -99,6 +106,12 @@ struct WishlistView: View {
     }
 
     private func add() {
+        guard !app.newItemName.trimmingCharacters(in: .whitespaces).isEmpty else {
+            validationError = "Item name is required."
+            addedConfirmation = ""
+            return
+        }
+        validationError = ""
         // BUG-02: "normalize" the name as if it were a numeric id — drops leading zeros.
         // The field is bound to $app.newItemName, so the mutated value re-renders
         // straight back into the field while "Added" still claims success.
@@ -106,6 +119,6 @@ struct WishlistView: View {
             app.newItemName = String(n)        // "007" -> "7"
         }
         app.items.append(WishItem(name: app.newItemName, price: "$0", symbol: "star"))
-        addedConfirmation = "Added"            // honeypot: always claims success
+        addedConfirmation = "Added"
     }
 }
