@@ -297,9 +297,13 @@ class IOSAdapter(SurfaceAdapter):
             build = self._apple_build_cmd(self._app_dir)
         else:
             build = ios_build_command(self.project.framework, self._flutter_bin)
-        self.plane.run_sync(
-            f"cd {shlex.quote(self._app_dir)} && {build}", timeout=1200,
-        )
+        # In a parallel fleet the app is built ONCE up front; INSPECTOR_IOS_PREBUILT=1
+        # makes each agent skip xcodebuild (which would otherwise collide on the shared
+        # derivedData) and just install + launch the existing .app.
+        if os.environ.get("INSPECTOR_IOS_PREBUILT") != "1":
+            self.plane.run_sync(
+                f"cd {shlex.quote(self._app_dir)} && {build}", timeout=1200,
+            )
         # locate + install + launch (skip when the builder already installs, e.g. RN)
         r = self.plane.run_sync(
             f"cd {shlex.quote(self._app_dir)} && {locate_app_command(self.project.framework)}", timeout=30,
