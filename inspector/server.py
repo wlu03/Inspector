@@ -584,6 +584,42 @@ def fix_finding(session_id: str, finding_id: str) -> dict:
     }
 
 
+@mcp.tool(annotations=DESTRUCTIVE)
+async def verify_fix(session_id: str, finding_id: str, ctx: Context = None) -> dict:
+    """Re-verify ONE finding is fixed by replaying its exact repro on the current build.
+
+    Faster + more targeted than a full test_app re-run: it re-launches the app, replays
+    the finding's recorded actions by coordinate, and reports whether the signature
+    reappears (still_present) or is gone (fixed) — then stamps the finding accordingly.
+    Use after editing the code (or after fix_with_devin) to confirm the fix worked.
+    """
+    from .dashboard.aggregate import load_session_detail
+    from .reverify import mark_fixed
+    from .reverify import verify_fix as _verify_fix
+
+    detail = load_session_detail(CONFIG.trace_root, session_id)
+    sess = detail.get("session") or {}
+    if not sess:
+        return {"error": f"no session {session_id!r} on disk"}
+    finding = next((f for f in detail["findings"] if f.get("id") == finding_id), None)
+    if finding is None:
+        return {"error": f"unknown finding {finding_id!r} in session {session_id!r}"}
+
+    repo = sess.get("repo_path")
+    prior_dir = os.path.join(CONFIG.trace_root, session_id)
+    surface = Surface(sess["surface"]) if sess.get("surface") else None
+    summary = finding.get("summary", "")
+
+    res = await _run_with_heartbeat(
+        ctx, "re-verifying fix",
+        lambda: _verify_fix(CONFIG, repo, prior_dir, summary, surface),
+    )
+    if res.get("status") in ("fixed", "still_present"):
+        mark_fixed(prior_dir, summary, fixed=res["status"] == "fixed")
+        res["finding_id"] = finding_id
+    return res
+
+
 @mcp.tool(annotations=READ_ONLY)
 def bug_ledger() -> dict:
     """Every unique issue across all runs with its CURRENT fix status — the fix loop, closed.
