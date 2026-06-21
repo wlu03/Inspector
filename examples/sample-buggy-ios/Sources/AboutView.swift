@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// Screen 3 — About. Static info plus the "Reset all" navigation defect (BUG-05).
+/// Screen 3 — About. Static info plus a "Clear wishlist" that works CORRECTLY (clears
+/// state and returns to the Wishlist root). It is a deliberate non-bug: a correctly-
+/// behaving destructive control raises the precision bar — an agent that flags it is wrong.
 struct AboutView: View {
     @EnvironmentObject var app: AppState
     @Binding var path: [Route]
@@ -8,25 +10,26 @@ struct AboutView: View {
     var body: some View {
         Form {
             Section("App") {
-                Text("Sample Buggy App").font(.headline)
+                Text("Wishlist").font(.headline)
                 Text("A deterministic, multi-screen UI-testing fixture.")
                     .foregroundStyle(.secondary)
-                LabeledContent("Version", value: "1.0.0 (M0)")
+                LabeledContent("Version", value: "2.0.0")
                     .accessibilityIdentifier("about.version")
             }
 
             Section {
-                Button("Reset all", role: .destructive, action: resetAll)
+                Button("Clear wishlist", role: .destructive, action: clearAll)
                     .accessibilityIdentifier("about.reset.button")
             }
         }
         .navigationTitle("About")
     }
 
-    private func resetAll() {
-        // BUG-05: should clear all state and return to Settings (the root).
-        // Instead it clears nothing and pushes the wrong screen (Profile).
-        NSLog("reset no-op, wrong route")
-        path.append(.profile)
+    private func clearAll() {
+        app.newItemName = ""
+        app.savedItemName = ""
+        app.savedItemPrice = ""
+        app.items.removeAll()
+        path.removeAll()        // correctly returns to the Wishlist root
     }
 }

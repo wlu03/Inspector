@@ -2,365 +2,532 @@ from __future__ import annotations
 
 import json
 import os
-import time
+import shlex
+import threading
 
 from ..config import Config
-from ..models import ActionType, Surface
+from ..models import ActionType, Element, Surface
 from ..planes.macos import MacOSPlane
 from .base import InputAction, SurfaceAdapter
 
-BUNDLE_ID = "com.inspector.SampleBuggyApp"
-APP_DIR = "/tmp/inspector-app"
-CRASH_LOG = "/tmp/inspector_crash.log"
+# Roles (lowercased, AX-prefix-stripped) that count as interactive for the a11y tree.
+_INTERACTIVE_ROLES = {
+    "button", "textfield", "securetextfield", "searchfield", "switch", "cell",
+    "link", "slider", "stepper", "segmentedcontrol", "tab", "tabbar", "menuitem",
+    "checkbox", "radiobutton", "textview", "picker", "pickerwheel", "keyboard",
+    "popupbutton", "image",
+}
+# HID usage codes for `idb ui key`.
+_HID_KEYS = {
+    "enter": 40, "return": 40, "tab": 43, "space": 44, "delete": 42,
+    "backspace": 42, "escape": 41, "up": 82, "down": 81, "left": 80, "right": 79,
+}
+_A11Y_MIN_INTERACTIVE = 2  # below this, the tree is opaque (webview/canvas) → merge vision
+_DEFAULT_POINTS = (393, 852)  # iPhone 15-class default until idb describe refines it
 
+
+# ---------------- pure helpers (unit-tested) ----------------
+
+def ios_build_command(framework: str, flutter_bin: str = "flutter") -> str:
+    """Build command (run in the remote app dir) for the simulator build."""
+    if framework == "flutter":
+        return f"{flutter_bin} build ios --simulator --debug"
+    if framework in ("expo", "react-native", "rn"):
+        return "npx react-native run-ios --simulator 2>/dev/null || npx expo run:ios"
+    # apple-native (xcodeproj / Package.swift): xcodebuild auto-detects the project
+    return (
+        "xcodebuild -sdk iphonesimulator -configuration Debug "
+        "-derivedDataPath ./build CODE_SIGNING_ALLOWED=NO build"
+    )
+
+
+def locate_app_command(framework: str) -> str:
+    """Shell command that prints the built .app path (first match).
+
+    Emits an ABSOLUTE path ($PWD) — later install/plutil commands run in a fresh
+    subprocess without the build dir as cwd, so a relative ./build path would break.
+    Output dir differs per framework: flutter → build/ios; RN → ios/build (run-ios
+    self-installs, but we still locate the .app to read its bundle id); else ./build.
+    """
+    if framework == "flutter":
+        root = "$PWD/build/ios"
+    elif framework in ("expo", "react-native", "rn"):
+        root = "$PWD/ios/build $PWD/build"
+    else:
+        root = "$PWD/build"
+    return f"find {root} -maxdepth 6 -name '*.app' -type d 2>/dev/null | head -1"
+
+
+def first_scheme(list_json: str) -> str | None:
+    """First scheme from `xcodebuild -list -json`. Pure.
+
+    xcodebuild needs -scheme when -derivedDataPath is set; the scheme is project-
+    specific (= the xcodegen target name), so we detect it rather than guess.
+    """
+    try:
+        d = json.loads(list_json)
+        for key in ("project", "workspace"):
+            schemes = (d.get(key) or {}).get("schemes") or []
+            if schemes:
+                return schemes[0]
+    except Exception:
+        pass
+    return None
+
+
+def parse_screen_points(describe_json: str) -> tuple[int, int]:
+    """Device POINT dimensions from `idb describe --json`. Pure.
+
+    Critical for the point-vs-pixel contract: idb taps use POINTS, simctl screenshots
+    are PIXELS. screen_size() must return points so ratio*size lands a correct tap.
+    """
+    try:
+        d = json.loads(describe_json)
+        sd = d.get("screen_dimensions") or d.get("screen") or {}
+        wp, hp = sd.get("width_points"), sd.get("height_points")
+        if wp and hp:
+            return int(wp), int(hp)
+        w, h, dens = sd.get("width"), sd.get("height"), sd.get("density") or 1
+        if w and h and dens:
+            return int(w / dens), int(h / dens)
+    except Exception:
+        pass
+    return _DEFAULT_POINTS
+
+
+def first_iphone_udid(list_devices_json: str) -> str | None:
+    """First available iPhone simulator UDID from `simctl list devices available -j`."""
+    return (all_iphone_udids(list_devices_json) or [None])[0]
+
+
+def all_iphone_udids(list_devices_json: str) -> list[str]:
+    """All available iPhone simulator UDIDs (ordered). Pure — the pool a parallel fleet
+    draws distinct devices from so agents don't collide on one simulator."""
+    out: list[str] = []
+    try:
+        data = json.loads(list_devices_json)
+        for _runtime, devices in (data.get("devices") or {}).items():
+            for dev in devices:
+                if dev.get("isAvailable", True) and "iPhone" in (dev.get("name") or ""):
+                    if dev.get("udid"):
+                        out.append(dev["udid"])
+    except Exception:
+        pass
+    return out
+
+
+# Distinct simulators handed out one-per-agent so a parallel/multi-agent run boots a
+# FLEET of simulators instead of colliding on the first available one (thread-safe).
+_sim_lock = threading.Lock()
+_sim_claimed: set[str] = set()
+
+
+def _frame_of(node: dict) -> tuple[float, float, float, float] | None:
+    """Extract (x, y, w, h) in points from an idb a11y node, defensively."""
+    fr = node.get("frame")
+    if isinstance(fr, dict):
+        try:
+            return float(fr["x"]), float(fr["y"]), float(fr["width"]), float(fr["height"])
+        except (KeyError, TypeError, ValueError):
+            pass
+    ax = node.get("AXFrame")  # "{{x, y}, {w, h}}"
+    if isinstance(ax, str):
+        nums = [t for t in ax.replace("{", " ").replace("}", " ").replace(",", " ").split() if t]
+        try:
+            x, y, w, h = (float(nums[0]), float(nums[1]), float(nums[2]), float(nums[3]))
+            return x, y, w, h
+        except (IndexError, ValueError):
+            pass
+    return None
+
+
+def parse_describe_all(describe_all_json: str, w_pts: int, h_pts: int) -> list[Element]:
+    """Parse `idb ui describe-all --json` into Element[] (bbox as 0..1 point-ratios). Pure."""
+    try:
+        nodes = json.loads(describe_all_json)
+    except Exception:
+        return []
+    if not isinstance(nodes, list) or not w_pts or not h_pts:
+        return []
+    out: list[Element] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        frame = _frame_of(node)
+        if frame is None:
+            continue
+        x, y, w, h = frame
+        if w <= 0 or h <= 0:
+            continue
+        label = (node.get("AXLabel") or node.get("AXValue") or node.get("title")
+                 or node.get("help") or "")
+        role = str(node.get("type") or node.get("role_description") or node.get("role") or "")
+        role = role.lower().replace("ax", "").strip()
+        enabled = bool(node.get("enabled", True))
+        interactive = enabled and (role in _INTERACTIVE_ROLES)
+        out.append(Element(
+            id=0, label=str(label).strip(), role=role,
+            bbox=[x / w_pts, y / h_pts, (x + w) / w_pts, (y + h) / h_pts],
+            interactivity=interactive, source="a11y",
+        ))
+    return out
+
+
+def describe_value_at(describe_all_json: str, index: int) -> dict:
+    """The AXValue/AXLabel of the element at `index` (same filter/order as
+    parse_describe_all) — the live VALUE for the input-integrity oracle. Pure."""
+    try:
+        nodes = json.loads(describe_all_json)
+    except Exception:
+        return {}
+    if not isinstance(nodes, list):
+        return {}
+    valid = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        frame = _frame_of(node)
+        if frame is None or frame[2] <= 0 or frame[3] <= 0:
+            continue
+        valid.append(node)
+    if 0 <= index < len(valid):
+        n = valid[index]
+        return {
+            "value": str(n.get("AXValue") or ""),
+            "label": str(n.get("AXLabel") or ""),
+            "role": str(n.get("type") or n.get("role") or ""),
+        }
+    return {}
+
+
+def _iou(a: list[float], b: list[float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def merge_elements(a11y: list[Element], vision: list[Element], iou_thresh: float = 0.3) -> list[Element]:
+    """Keep all a11y elements; append vision elements that don't overlap one. Pure."""
+    merged = list(a11y)
+    for v in vision:
+        if not any(_iou(v.bbox, e.bbox) > iou_thresh for e in a11y):
+            merged.append(v)
+    return _renumber(merged)
+
+
+def _renumber(els: list[Element]) -> list[Element]:
+    for i, e in enumerate(els):
+        e.id = i
+    return els
+
+
+def idb_tap_cmd(idb: str, udid: str, x: int, y: int) -> str:
+    return f"{idb} ui tap --udid {shlex.quote(udid)} {x} {y}"
+
+
+def idb_text_cmd(idb: str, udid: str, text: str) -> str:
+    return f"{idb} ui text --udid {shlex.quote(udid)} {shlex.quote(text)}"
+
+
+def idb_swipe_cmd(idb: str, udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) -> str:
+    # --duration makes the swipe a deterministic drag, not a momentum flick.
+    return f"{idb} ui swipe --udid {shlex.quote(udid)} {x1} {y1} {x2} {y2} --duration {duration}"
+
+
+def idb_key_cmd(idb: str, udid: str, code: int) -> str:
+    return f"{idb} ui key --udid {shlex.quote(udid)} {code}"
+
+
+# ---------------- the adapter ----------------
 
 class IOSAdapter(SurfaceAdapter):
-    """iOS via the Simulator on a macOS host (simctl + idb). See docs/11 Part K.
+    """iOS apps via the Simulator inside a tart macOS VM (simctl + idb over SSH).
 
-    Uses MacOSPlane (tart VM or remote macOS) to run all commands over SSH.
-    The flow: boot sim -> build for simulator -> install -> launch -> interact.
+    Grounding is hybrid: native a11y tree (idb describe-all) primary, OmniParser SoM
+    fallback for opaque webview/canvas screens. Clicks always go through pixels
+    (Element.center_px), so the pure-computer-use action path is unchanged.
     """
 
     surface = Surface.IOS
+    REMOTE_APP_DIR = "/tmp/inspector-app"
+    LOG_FILE = "/tmp/inspector_ios.log"
 
     def __init__(self, config: Config):
         self.config = config
         self.plane = MacOSPlane(
-            host=os.getenv("LOOPBACK_MACOS_HOST"),
-            user=os.getenv("LOOPBACK_MACOS_USER", "admin"),
-            password=os.getenv("LOOPBACK_MACOS_PASSWORD", "admin"),
+            base_image=config.macos_base_image, host=config.macos_host,
+            user=config.macos_user, ssh_key=config.macos_ssh_key,
+            local=(config.execution == "local"),
         )
-        self.udid: str | None = None
-        self.bundle_id: str = BUNDLE_ID
-        self._log_offset = 0
-        self._log_lines: list[str] = []
-        self._screen_w = 393  # iPhone 15 logical
-        self._screen_h = 852
+        self.udid: str | None = config.macos_ios_udid
+        self.bundle_id: str | None = None
+        self._idb = config.ios_idb_bin  # idb client binary (py3.10-3.12; not 3.14)
+        self._flutter_bin = config.flutter_bin  # flutter binary for Flutter builds
+        self._app_dir: str | None = None
+        self._app_process: str | None = None  # executable name → log-stream predicate
+        self._point_size: tuple[int, int] = _DEFAULT_POINTS
+        self._log_seen = 0
+        self._detector = None  # lazy OmniParser, only for the webview fallback-merge
+        self.project = None
 
+    # --- lifecycle ---
     def launch(self, repo_path: str, dev_command: str | None = None) -> None:
         self.plane.start()
-
-        # Upload the app source into the VM
-        self.plane.upload(repo_path, APP_DIR)
-
-        # Find or boot a simulator
-        self.udid = self._boot_simulator()
-
-        # Build the app for simulator
-        self._build_app(dev_command)
-
-        # Install and launch
-        app_path = self._find_app_bundle()
-        self.plane.run_sync(f"xcrun simctl install {self.udid} {app_path}", timeout=60)
-
-        # Detect bundle ID from the project if possible
-        self.bundle_id = self._detect_bundle_id() or BUNDLE_ID
-
-        self.plane.run_sync(
-            f"xcrun simctl launch {self.udid} {self.bundle_id}",
-            timeout=30,
-        )
-
-        # Clear crash log baseline
-        self.plane.run_sync(f": > {CRASH_LOG}")
-
-        # Start log stream in background for crash detection
-        app_name = self.bundle_id.split(".")[-1]
-        self.plane.run_bg(
-            f"xcrun simctl spawn {self.udid} log stream "
-            f"--predicate 'processImagePath endswith \"{app_name}\"' "
-            f"--level error 2>&1 >> {CRASH_LOG}"
-        )
-
-    def is_ready(self, timeout_s: float = 60.0) -> bool:
-        """Wait until the app process is running in the simulator."""
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            res = self.plane.run_sync(
-                f"xcrun simctl get_app_container {self.udid} {self.bundle_id} 2>/dev/null",
-                timeout=10,
+        self.project = _detect_ios_project(repo_path)
+        if self.plane.local:
+            self._app_dir = repo_path  # build in place on the host — no upload
+        else:
+            self.plane.run_sync(f"rm -rf {self.REMOTE_APP_DIR}", timeout=30)
+            self.plane.upload(repo_path, self.REMOTE_APP_DIR)
+            self._app_dir = self.REMOTE_APP_DIR
+        self._ensure_device()
+        # build the app for the simulator (scheme-aware for apple-native projects)
+        if dev_command:
+            build = dev_command
+        elif self.project.framework == "apple-native":
+            build = self._apple_build_cmd(self._app_dir)
+        else:
+            build = ios_build_command(self.project.framework, self._flutter_bin)
+        # In a parallel fleet the app is built ONCE up front; INSPECTOR_IOS_PREBUILT=1
+        # makes each agent skip xcodebuild (which would otherwise collide on the shared
+        # derivedData) and just install + launch the existing .app.
+        if os.environ.get("INSPECTOR_IOS_PREBUILT") != "1":
+            self.plane.run_sync(
+                f"cd {shlex.quote(self._app_dir)} && {build}", timeout=1200,
             )
-            if res.returncode == 0 and res.stdout.strip():
-                time.sleep(2)  # settle time for the UI
-                return True
-            time.sleep(1)
-        return False
+        # locate + install + launch (skip when the builder already installs, e.g. RN)
+        r = self.plane.run_sync(
+            f"cd {shlex.quote(self._app_dir)} && {locate_app_command(self.project.framework)}", timeout=30,
+        )
+        app_path = (r.stdout.strip() if r and r.stdout else "")
+        if app_path:
+            self.plane.run_sync(
+                f"xcrun simctl install {self.udid} {shlex.quote(app_path)}", timeout=180,
+            )
+            self.bundle_id = self._bundle_id_of(app_path)
+            # process name = CFBundleExecutable (the .app dir name differs for RN /
+            # renamed / spaces-in-name apps, which would make the log predicate match
+            # nothing); fall back to the bundle basename if the plist read fails.
+            self._app_process = (self._app_executable(app_path)
+                                 or app_path.rsplit("/", 1)[-1].removesuffix(".app"))
+            if self.bundle_id:
+                self.plane.run_sync(
+                    f"xcrun simctl launch {self.udid} {shlex.quote(self.bundle_id)}", timeout=60,
+                )
 
+    def is_ready(self, timeout_s: float = 180.0) -> bool:
+        if not self.udid:
+            return False
+        # block until the device is fully booted
+        self.plane.run_sync(f"xcrun simctl bootstatus {self.udid} -b", timeout=int(timeout_s))
+        # refine the point size from idb (the point-vs-pixel contract)
+        r = self.plane.run_sync(f"{self._idb} describe --udid {self.udid} --json", timeout=30)
+        if r and r.stdout:
+            self._point_size = parse_screen_points(r.stdout)
+        self.plane.run_sync(f"{self._idb} connect {self.udid} 2>/dev/null || true", timeout=30)
+        self._start_log_capture()
+        return True
+
+    # --- perception / action ---
     def screenshot(self) -> bytes:
+        # simctl returns ONLY the device framebuffer — no desktop chrome, no crop.
         return self.plane.screenshot()
 
+    def screen_size(self) -> tuple[int, int]:
+        # POINTS, not the screenshot's pixels — so center_px maps ratios to idb taps.
+        return self._point_size
+
     def input(self, action: InputAction) -> None:
+        if not self.udid:
+            return
         t = action.type
+        idb = self._idb
         if t == ActionType.CLICK:
-            self._idb(f"ui tap {action.x} {action.y}")
+            self.plane.run_sync(idb_tap_cmd(idb, self.udid, action.x, action.y))
         elif t == ActionType.DOUBLE_CLICK:
-            self._idb(f"ui tap {action.x} {action.y}")
-            time.sleep(0.05)
-            self._idb(f"ui tap {action.x} {action.y}")
+            self.plane.run_sync(idb_tap_cmd(idb, self.udid, action.x, action.y))
+            self.plane.run_sync(idb_tap_cmd(idb, self.udid, action.x, action.y))
         elif t == ActionType.TYPE:
-            self._idb(f"ui text {_shell_quote(action.text or '')}")
+            if action.x is not None and action.y is not None:
+                self.plane.run_sync(idb_tap_cmd(idb, self.udid, action.x, action.y))  # focus first
+            self.plane.run_sync(idb_text_cmd(idb, self.udid, action.text or ""))
         elif t == ActionType.KEY:
-            # idb uses key codes; map common names
-            key = _idb_key(action.key or "")
-            self._idb(f"ui key {key}")
+            code = _HID_KEYS.get((action.key or "").lower())
+            if code is not None:
+                self.plane.run_sync(idb_key_cmd(idb, self.udid, code))
         elif t == ActionType.SCROLL:
-            # Swipe gesture: swipe from center in the given direction
-            cx, cy = self._screen_w // 2, self._screen_h // 2
-            dist = 200 * action.amount
-            if action.direction == "down":
-                self._idb(f"ui swipe {cx} {cy} {cx} {cy - dist}")
-            elif action.direction == "up":
-                self._idb(f"ui swipe {cx} {cy} {cx} {cy + dist}")
-            elif action.direction == "left":
-                self._idb(f"ui swipe {cx} {cy} {cx + dist} {cy}")
-            elif action.direction == "right":
-                self._idb(f"ui swipe {cx} {cy} {cx - dist} {cy}")
+            w, h = self._point_size
+            cx, cy = w // 2, h // 2
+            dy = h // 3 if action.direction == "down" else -h // 3
+            self.plane.run_sync(idb_swipe_cmd(idb, self.udid, cx, cy, cx, cy - dy))
+        elif t == ActionType.DRAG:
+            self.plane.run_sync(idb_swipe_cmd(idb, self.udid, action.x, action.y, action.to_x, action.to_y))
         elif t == ActionType.WAIT:
-            time.sleep(1)
+            pass
 
-    def logs(self) -> list[str]:
-        res = self.plane.run_sync(f"cat {CRASH_LOG} 2>/dev/null || true", timeout=10)
-        text = res.stdout if res.returncode == 0 else ""
-        lines = text.splitlines()
-        new = lines[self._log_offset:]
-        self._log_offset = len(lines)
-
-        # Also check for crash reports
-        crash_lines = self._check_crash_reports()
-        return new + crash_lines
+    def detect_elements(self, screenshot: bytes) -> list[Element] | None:
+        """a11y tree (idb describe-all) primary; OmniParser fallback-merge on opaque screens."""
+        if not self.udid:
+            return None
+        r = self.plane.run_sync(f"{self._idb} ui describe-all --udid {self.udid} --json", timeout=30)
+        if r is None or not (r.stdout or "").strip():
+            return None  # idb unavailable → pure OmniParser path
+        w, h = self._point_size
+        a11y = parse_describe_all(r.stdout, w, h)
+        if not a11y:
+            return None  # nothing usable → OmniParser
+        if len([e for e in a11y if e.interactivity]) >= _A11Y_MIN_INTERACTIVE:
+            return _renumber(a11y)  # rich native tree
+        vision = self._vision_detect(screenshot)  # opaque (webview/canvas) → merge
+        return merge_elements(a11y, vision) if vision else _renumber(a11y)
 
     def rendered_elements(self) -> list[str]:
-        # Same oracle contract as web/Android — the source is the accessibility tree:
-        # `idb ui describe-all` → collect each element's AXLabel / identifier. Wired
-        # with the rest of M3.
-        raise NotImplementedError(
-            "IOSAdapter.rendered_elements — idb ui describe-all (docs/11 Part K)"
-        )
+        """a11y labels of the interactive elements actually on screen (oracle source)."""
+        if not self.udid:
+            return []
+        r = self.plane.run_sync(f"{self._idb} ui describe-all --udid {self.udid} --json", timeout=30)
+        if r is None or not (r.stdout or "").strip():
+            return []
+        w, h = self._point_size
+        return [e.label for e in parse_describe_all(r.stdout, w, h) if e.interactivity and e.label]
 
-    def screen_size(self) -> tuple[int, int]:
-        return self._screen_w, self._screen_h
+    def control_state(self, element_id: int) -> dict:
+        """Live AXValue/AXLabel of the element at element_id — the read-back source for
+        the input-integrity oracle (e.g. typed '007', field holds '7')."""
+        if not self.udid:
+            return {}
+        r = self.plane.run_sync(f"{self._idb} ui describe-all --udid {self.udid} --json", timeout=30)
+        if r is None or not (r.stdout or "").strip():
+            return {}
+        return describe_value_at(r.stdout, element_id)
+
+    def logs(self) -> list[str]:
+        r = self.plane.run_sync(f"cat {self.LOG_FILE} 2>/dev/null || true", timeout=15)
+        text = r.stdout if r and r.stdout else ""
+        lines = text.splitlines()
+        if len(lines) < self._log_seen:  # rotated/truncated
+            self._log_seen = 0
+        new = lines[self._log_seen:]
+        self._log_seen = len(lines)
+        return new
 
     def teardown(self) -> None:
         if self.udid:
-            try:
-                self.plane.run_sync(f"xcrun simctl shutdown {self.udid}", timeout=15)
-            except Exception:
-                pass
+            self.plane.run_sync(f"xcrun simctl shutdown {self.udid} 2>/dev/null || true", timeout=30)
+            with _sim_lock:
+                _sim_claimed.discard(self.udid)   # return it to the pool
         self.plane.stop()
 
     # --- helpers ---
-
-    def _idb(self, cmd: str) -> None:
-        self.plane.run_sync(f"idb {cmd}", timeout=15)
-
-    def _boot_simulator(self) -> str:
-        """Find an available iOS simulator and boot it. Returns the UDID."""
-        # List available simulators
-        res = self.plane.run_sync(
-            "xcrun simctl list devices available --json", timeout=30,
-        )
-        devices = json.loads(res.stdout)
-        # Find an iPhone simulator (prefer iPhone 15/16)
-        udid = None
-        for runtime, devs in devices.get("devices", {}).items():
-            if "iOS" not in runtime:
-                continue
-            for dev in devs:
-                if "iPhone" in dev.get("name", ""):
-                    udid = dev["udid"]
-                    if "15" in dev["name"] or "16" in dev["name"]:
-                        break  # prefer newer models
-            if udid:
-                break
-
-        if not udid:
-            # Create one
-            res = self.plane.run_sync(
-                "xcrun simctl create 'Inspector iPhone' "
-                "'com.apple.CoreSimulator.SimDeviceType.iPhone-15'",
-                timeout=30,
-            )
-            udid = res.stdout.strip()
-
-        # Boot it
-        self.plane.run_sync(f"xcrun simctl boot {udid} 2>/dev/null || true", timeout=60)
-        # Wait for boot
-        self.plane.run_sync(f"xcrun simctl bootstatus {udid} -b", timeout=120)
-
-        # Get screen size from simctl
-        self._detect_screen_size(udid)
-
-        return udid
-
-    def _detect_screen_size(self, udid: str) -> None:
-        """Try to get the simulator's screen dimensions."""
-        res = self.plane.run_sync(
-            f"xcrun simctl io {udid} enumerate 2>/dev/null | head -5 || true",
-            timeout=10,
-        )
-        # Fallback: take a test screenshot and check dimensions
-        try:
-            png = self.plane.screenshot()
-            if len(png) > 100:
-                from PIL import Image
-                import io
-                img = Image.open(io.BytesIO(png))
-                self._screen_w, self._screen_h = img.size
-        except Exception:
-            pass  # keep defaults
-
-    def _build_app(self, dev_command: str | None = None) -> None:
-        """Build the iOS app for the simulator."""
-        if dev_command:
-            self.plane.run_sync(f"cd {APP_DIR} && {dev_command}", timeout=600)
-            return
-
-        # Check if it's an Expo/RN project
-        res = self.plane.run_sync(f"test -f {APP_DIR}/package.json && echo yes", timeout=5)
-        if res.stdout.strip() == "yes":
-            # Check for expo
-            res = self.plane.run_sync(
-                f"cd {APP_DIR} && cat package.json", timeout=5,
-            )
-            pkg = json.loads(res.stdout) if res.stdout.strip() else {}
-            deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-
-            if "expo" in deps:
-                self.plane.run_sync(
-                    f"cd {APP_DIR} && npm install && npx expo run:ios --no-bundler -d {self.udid}",
-                    timeout=600,
-                )
-                return
-
-            if "react-native" in deps:
-                self.plane.run_sync(
-                    f"cd {APP_DIR} && npm install && npx react-native run-ios --simulator {self.udid}",
-                    timeout=600,
-                )
-                return
-
-        # Check for xcodegen project.yml
-        res = self.plane.run_sync(f"test -f {APP_DIR}/project.yml && echo yes", timeout=5)
-        if res.stdout.strip() == "yes":
-            self.plane.run_sync(
-                f"cd {APP_DIR} && xcodegen generate 2>/dev/null || true",
-                timeout=60,
-            )
-
-        # Native Xcode project — find .xcodeproj or .xcworkspace
-        res = self.plane.run_sync(
-            f"ls -d {APP_DIR}/*.xcworkspace 2>/dev/null || ls -d {APP_DIR}/*.xcodeproj 2>/dev/null || true",
-            timeout=10,
-        )
-        project_path = res.stdout.strip().splitlines()[0] if res.stdout.strip() else ""
-
-        if project_path.endswith(".xcworkspace"):
-            build_flag = f"-workspace {project_path}"
-        elif project_path.endswith(".xcodeproj"):
-            build_flag = f"-project {project_path}"
-        else:
-            raise RuntimeError(f"No .xcodeproj or .xcworkspace found in {APP_DIR}")
-
-        # Get the scheme name
-        scheme = self._detect_scheme(project_path)
-
-        self.plane.run_sync(
-            f"xcodebuild {build_flag} -scheme {scheme} "
-            f"-sdk iphonesimulator -destination 'id={self.udid}' "
-            f"CODE_SIGNING_ALLOWED=NO "
-            f"-derivedDataPath {APP_DIR}/build "
-            f"build 2>&1 | tail -20",
-            timeout=600,
-        )
-
-    def _detect_scheme(self, project_path: str) -> str:
-        res = self.plane.run_sync(
-            f"xcodebuild -list -json "
-            f"{'-workspace' if project_path.endswith('.xcworkspace') else '-project'} "
-            f"{project_path} 2>/dev/null || true",
-            timeout=30,
-        )
-        try:
-            info = json.loads(res.stdout)
-            key = "workspace" if "workspace" in info else "project"
-            schemes = info[key].get("schemes", [])
-            if schemes:
-                return schemes[0]
-        except (json.JSONDecodeError, KeyError):
-            pass
-        # Fallback: use the directory name
-        return os.path.basename(project_path).rsplit(".", 1)[0]
-
-    def _find_app_bundle(self) -> str:
-        """Find the .app bundle in the build output."""
-        res = self.plane.run_sync(
-            f"find {APP_DIR}/build -name '*.app' -type d | head -1",
-            timeout=15,
-        )
-        path = res.stdout.strip()
-        if path:
-            return path
-
-        # Expo/RN may put it elsewhere
-        res = self.plane.run_sync(
-            f"find ~/Library/Developer/Xcode/DerivedData -name '*.app' -path '*Debug*' "
-            f"-newer {APP_DIR} -type d 2>/dev/null | head -1",
-            timeout=15,
-        )
-        path = res.stdout.strip()
-        if path:
-            return path
-
-        raise RuntimeError("Could not find .app bundle after build")
-
-    def _detect_bundle_id(self) -> str | None:
-        """Try to read the bundle ID from the built app's Info.plist."""
-        app_path = None
-        try:
-            res = self.plane.run_sync(
-                f"find {APP_DIR}/build -name 'Info.plist' -path '*.app/*' | head -1",
-                timeout=10,
-            )
-            plist = res.stdout.strip()
-            if plist:
-                res = self.plane.run_sync(
-                    f"/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' {plist}",
-                    timeout=10,
-                )
-                bid = res.stdout.strip()
-                if bid and res.returncode == 0:
-                    return bid
-        except Exception:
-            pass
+    def _claim_udid(self) -> str | None:
+        """Claim a simulator no other agent in this process is using, so a parallel run
+        boots a FLEET. Creates a fresh sim if the available pool is exhausted."""
+        with _sim_lock:
+            r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
+            for u in all_iphone_udids(r.stdout if r and r.stdout else ""):
+                if u not in _sim_claimed:
+                    _sim_claimed.add(u)
+                    return u
+            # pool exhausted → create a dedicated sim for this agent
+            name = f"Inspector-{len(_sim_claimed)}"
+            self.plane.run_sync(f'xcrun simctl create "{name}" "iPhone 15" 2>/dev/null || true', timeout=60)
+            r = self.plane.run_sync("xcrun simctl list devices available -j", timeout=30)
+            for u in all_iphone_udids(r.stdout if r and r.stdout else ""):
+                if u not in _sim_claimed:
+                    _sim_claimed.add(u)
+                    return u
         return None
 
-    def _check_crash_reports(self) -> list[str]:
-        """Check for new crash reports from the simulator."""
-        res = self.plane.run_sync(
-            "ls -t ~/Library/Logs/DiagnosticReports/*.crash 2>/dev/null | head -1",
-            timeout=10,
+    def _ensure_device(self) -> None:
+        if not self.udid:
+            self.udid = self._claim_udid()
+        if self.udid:
+            self.plane.run_sync(f"xcrun simctl boot {self.udid} 2>/dev/null || true", timeout=120)
+            # Demo mode: pop the Simulator window so you can WATCH the app being driven.
+            # (Driving still goes through simctl/idb — the window is just for viewing.)
+            if os.environ.get("INSPECTOR_SHOW_SIMULATOR") == "1":
+                self.plane.run_sync("open -a Simulator", timeout=30)
+
+    def _apple_build_cmd(self, app_dir: str) -> str:
+        """Regenerate the xcodegen project (if any), detect the scheme, and build.
+
+        -derivedDataPath requires -scheme; -destination needs a real simulator
+        (a runtime must be installed). Both learned from the fixture's run.sh.
+        """
+        self.plane.run_sync(
+            f"cd {shlex.quote(app_dir)} && (test -f project.yml && xcodegen generate || true)",
+            timeout=120,
         )
-        path = res.stdout.strip()
-        if not path:
+        r = self.plane.run_sync(
+            f"cd {shlex.quote(app_dir)} && xcodebuild -list -json 2>/dev/null", timeout=60,
+        )
+        scheme = first_scheme(r.stdout if r and r.stdout else "")
+        sflag = f"-scheme {shlex.quote(scheme)} " if scheme else ""
+        return (
+            f"xcodebuild {sflag}-sdk iphonesimulator -configuration Debug "
+            f"-destination 'generic/platform=iOS Simulator' -derivedDataPath ./build "
+            f"CODE_SIGNING_ALLOWED=NO build"
+        )
+
+    def _bundle_id_of(self, app_path: str) -> str | None:
+        r = self.plane.run_sync(
+            f"plutil -extract CFBundleIdentifier raw {shlex.quote(app_path)}/Info.plist 2>/dev/null",
+            timeout=30,
+        )
+        bid = (r.stdout.strip() if r and r.stdout else "")
+        return bid or None
+
+    def _app_executable(self, app_path: str) -> str | None:
+        """CFBundleExecutable — the actual process name `log stream` matches on."""
+        r = self.plane.run_sync(
+            f"plutil -extract CFBundleExecutable raw {shlex.quote(app_path)}/Info.plist 2>/dev/null",
+            timeout=30,
+        )
+        name = (r.stdout.strip() if r and r.stdout else "")
+        return name or None
+
+    def _start_log_capture(self) -> None:
+        # Scope the stream to the app's process — otherwise simctl streams the WHOLE
+        # simulator (hundreds of fitcored/backboardd/locationd daemon errors swamp the
+        # app's own NSLog/os_log signal). logs() drains the file; scan_logs filters errors.
+        self.plane.run_sync(f": > {self.LOG_FILE} || true", timeout=15)
+        self._log_seen = 0
+        # Scope to the app's process AND drop com.apple.* framework subsystems (UIKit
+        # UIEvent chatter etc.) — only the app's own os_log/NSLog lines remain.
+        pred = ""
+        if self._app_process:
+            pred = ("--predicate 'process == \"%s\" AND NOT subsystem BEGINSWITH \"com.apple\"' "
+                    % self._app_process)
+        self.plane.run_bg(
+            f"xcrun simctl spawn {self.udid} log stream --style compact --level error "
+            f"{pred}> {self.LOG_FILE} 2>&1"
+        )
+
+    def _vision_detect(self, screenshot: bytes) -> list[Element]:
+        try:
+            if self._detector is None:
+                from ..perception.detector import OmniParserDetector
+                self._detector = OmniParserDetector(self.config)
+            return self._detector.detect(screenshot)
+        except Exception:
             return []
-        res = self.plane.run_sync(f"head -30 {path}", timeout=10)
-        if res.stdout.strip():
-            return [f"[crash-report] {line}" for line in res.stdout.splitlines()[:15]]
-        return []
 
 
-def _shell_quote(s: str) -> str:
-    """Quote a string for shell, with idb-friendly escaping."""
-    return "'" + s.replace("'", "'\\''") + "'"
+def _detect_ios_project(repo_path: str):
+    """Detect the iOS build kit. Falls back to apple-native; never raises."""
+    from ..launch.detect import detect_project
 
-
-def _idb_key(key: str) -> str:
-    """Map common key names to idb key event codes."""
-    mapping = {
-        "Return": "13", "Enter": "13",
-        "Tab": "9",
-        "Escape": "27",
-        "Backspace": "8", "Delete": "8",
-        "Space": "32",
-    }
-    return mapping.get(key, key)
+    try:
+        return detect_project(repo_path)  # handles JS (RN/expo) + the native arm
+    except Exception:
+        from ..launch.detect import ProjectInfo
+        return ProjectInfo(Surface.IOS, "apple-native", "none", "", None)

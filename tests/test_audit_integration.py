@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -109,6 +110,7 @@ def _fake_session(audit_dict):
     s.record = _Rec()
     s._seen_findings = set()
     s.action_log = []
+    s._capture_lock = threading.Lock()  # audit() serializes adapter access via this
     return s
 
 

@@ -11,6 +11,10 @@ build/
 .ruff_cache/
 .inspector/
 node_modules/
+# also catch node_modules symlinks (fixtures reuse one electron install)
+node_modules
+# stray screenshot redirected to a file named "-"
+/-
 scripts/_*.png
 replays/
 .mcp.json

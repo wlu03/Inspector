@@ -30,6 +30,6 @@ In the pure IDE inner-loop, the host agent's chat *is* the UI and a dashboard is
 
 ## Sequencing
 
-- **v0:** no dashboard — just write the trace artifacts to disk (schema in [06](06-data-schema.md)).
-- **v1:** minimal local viewer (run list + replay timeline).
-- **v2:** hosted dashboard with history, trends, team sharing, sign-off — the monetization surface, led when autonomous/CI runs land.
+- **v0:** no dashboard — just write the trace artifacts to disk (schema in [06](06-data-schema.md)). ✅
+- **v1 (built):** static aggregator — `inspector/dashboard/` scans `~/.inspector/sessions`, rolls up every run (pass-rate, severity, recurring-across-runs bugs) into one self-contained `dashboard.html` linking each session's replay; `python -m inspector.dashboard` or the `build_dashboard` MCP tool. Cross-session history + fix loop exposed via `list_runs` / `get_run` / `fix_finding` / `update_finding_status` (the host agent is the fixer). Styling shares `inspector/theme.py` with the landing page + replay. Replay video carries a cursor + click-intent overlay.
+- **v2:** hosted dashboard with history, trends/flakiness, team sharing, sign-off, rrweb DOM replay, live E2B stream URL — the monetization surface, led when autonomous/CI runs land.

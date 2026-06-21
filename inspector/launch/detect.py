@@ -29,6 +29,9 @@ _LOCKFILES = [
 # most specific first because frameworks share deps (SvelteKit/Astro both use vite).
 _FRAMEWORKS = [
     ("expo", "expo", Surface.ANDROID, "start", 8081),
+    # bare React Native (no Expo) — a mobile project; without this it falls through
+    # to the generic web fallback and gets the wrong surface/adapter.
+    ("react-native", "react-native", Surface.ANDROID, "start", 8081),
     ("next", "next", Surface.WEB, "dev", 3000),
     ("@sveltejs/kit", "sveltekit", Surface.WEB, "dev", 5173),
     ("astro", "astro", Surface.WEB, "dev", 4321),
@@ -45,10 +48,32 @@ def detect_package_manager(repo_path: str) -> tuple[str, str]:
     return "npm", "npm run"
 
 
+def _detect_native(repo_path: str, surface_hint: Surface | None) -> ProjectInfo | None:
+    """Native (non-JS) projects: Apple (xcodeproj/SPM/xcodegen) or Flutter."""
+    import glob
+
+    def has(pat: str) -> bool:
+        return bool(glob.glob(os.path.join(repo_path, pat)))
+
+    # Flutter FIRST: a Flutter project has pubspec.yaml at root AND a nested
+    # ios/Runner.xcodeproj (from `flutter create`), so the recursive xcodeproj glob
+    # below would otherwise misclassify it as apple-native.
+    if os.path.exists(os.path.join(repo_path, "pubspec.yaml")):
+        return ProjectInfo(surface_hint or Surface.IOS, "flutter", "flutter", "", None)
+    if (has("*.xcworkspace") or has("*.xcodeproj") or has("**/*.xcodeproj")
+            or os.path.exists(os.path.join(repo_path, "project.yml"))      # xcodegen
+            or os.path.exists(os.path.join(repo_path, "Package.swift"))):  # SPM
+        return ProjectInfo(surface_hint or Surface.IOS, "apple-native", "xcode", "", None)
+    return None
+
+
 def detect_project(repo_path: str, surface_hint: Surface | None = None) -> ProjectInfo:
     pkg_path = os.path.join(repo_path, "package.json")
     if not os.path.exists(pkg_path):
-        raise FileNotFoundError(f"no package.json in {repo_path}")
+        native = _detect_native(repo_path, surface_hint)
+        if native is not None:
+            return native
+        raise FileNotFoundError(f"no package.json or native project in {repo_path}")
     with open(pkg_path) as f:
         pkg = json.load(f)
 

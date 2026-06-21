@@ -43,7 +43,11 @@ def diff_expected_vs_actual(
         ne = _norm(e.label)
         if not ne or ne in seen:
             continue
-        present = any(ne == na or ne in na or na in ne for na in actual_norm)
+        # Match on equality, or substring ONLY for labels long enough that containment
+        # is meaningful (>=4 chars) — so "ok"/"x" don't spuriously match "Bookmarks".
+        # The reverse (rendered-in-expected) direction is dropped: a tiny rendered
+        # label shouldn't satisfy a long expected one.
+        present = any(ne == na or (len(ne) >= 4 and ne in na) for na in actual_norm)
         if not present:
             seen.add(ne)
             out.append(e)
@@ -71,6 +75,15 @@ def check_expectations(session, expected: list[ExpectedElement], judge_fn) -> li
 
     candidates = diff_expected_vs_actual(expected, actual)
     if not candidates:
+        return []
+
+    # Sanity guard against blank / mid-navigation frames: the oracle is only credible
+    # when the screen actually rendered. If we captured no labels, or MOST of what the
+    # code declares looks "missing", that's a bad frame (or a CDP hiccup) — not N real
+    # defects. A genuine miss is a few absences among many present elements, so require
+    # a solid baseline of present elements before trusting any absence.
+    present = len(expected) - len(candidates)
+    if not actual or present < max(2, len(expected) * 0.4):
         return []
 
     try:

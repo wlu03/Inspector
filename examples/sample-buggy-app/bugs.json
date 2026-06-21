@@ -1,0 +1,111 @@
+{
+  "app": "Acme Workspace (sample-buggy-app)",
+  "surface": "web",
+  "note": "Intentional fixture bugs. Each is a different class so Inspector's oracles get full coverage. DO NOT FIX — they are the test targets.",
+  "bugs": [
+    {
+      "id": "BUG-01",
+      "screen": "Settings",
+      "type": "crash",
+      "summary": "Save throws a TypeError before showing the 'Saved' toast — UI never confirms.",
+      "oracle": "log-tap (console.error + uncaught TypeError) + verify-after-act (changed:false)",
+      "repro": "Settings → type a name → click Save"
+    },
+    {
+      "id": "BUG-02",
+      "screen": "Profile",
+      "type": "input-integrity",
+      "summary": "Username field silently strips spaces on input — typed 'Wesley Lu' is stored as 'WesleyLu'.",
+      "oracle": "input-integrity (read-back value != typed)",
+      "repro": "Profile → type 'Wesley Lu' into Username"
+    },
+    {
+      "id": "BUG-03",
+      "screen": "Profile",
+      "type": "validation-bypass",
+      "summary": "Save profile accepts any email (empty / no @) and reports success.",
+      "oracle": "brain judgment",
+      "repro": "Profile → email 'notanemail' → Save profile → 'Profile saved'"
+    },
+    {
+      "id": "BUG-04",
+      "screen": "Settings",
+      "type": "state-not-persisted",
+      "summary": "Theme selection resets after navigating away and back (stored in a view-local var).",
+      "oracle": "cross-screen state / brain",
+      "repro": "Settings → Theme=Dark → Dashboard → Settings (back to System)"
+    },
+    {
+      "id": "BUG-05",
+      "screen": "Tasks",
+      "type": "logic",
+      "summary": "'N active' badge counts completed tasks too (should count only not-done).",
+      "oracle": "code-aware / brain",
+      "repro": "Tasks → the badge shows total, not active"
+    },
+    {
+      "id": "BUG-06",
+      "screen": "Cart",
+      "type": "arithmetic",
+      "summary": "Cart total sums quantities and ignores price (2x$12 + 1x$4.50 shows $3.00, not $28.50).",
+      "oracle": "code-aware / brain arithmetic check",
+      "repro": "Cart → compare Total to line items"
+    },
+    {
+      "id": "BUG-07",
+      "screen": "Cart",
+      "type": "validation-bypass",
+      "summary": "'Place order' succeeds with an empty cart.",
+      "oracle": "brain judgment",
+      "repro": "Cart → remove all items → Place order → 'Order placed!'"
+    },
+    {
+      "id": "BUG-08",
+      "screen": "Settings",
+      "type": "state-desync",
+      "summary": "Notifications toggle flips the label/visual but never updates state — Dashboard still says Off.",
+      "oracle": "cross-screen state",
+      "repro": "Settings → toggle Notifications On → Dashboard shows Off"
+    },
+    {
+      "id": "BUG-09",
+      "screen": "About",
+      "type": "missing-element",
+      "summary": "The 'Export data' button is specified for the About screen but never rendered.",
+      "oracle": "code-aware missing-element",
+      "repro": "About → no Export data button"
+    },
+    {
+      "id": "BUG-10",
+      "screen": "Billing",
+      "type": "dead-control",
+      "summary": "'Cancel subscription' button has no handler — clicking it does nothing.",
+      "oracle": "verify-after-act (changed:false)",
+      "repro": "Billing → click Cancel subscription → nothing happens"
+    },
+    {
+      "id": "BUG-11",
+      "screen": "Reports",
+      "type": "arithmetic",
+      "summary": "Task completion always shows 100% (divides done by done, not done by total).",
+      "oracle": "brain arithmetic check",
+      "repro": "Reports → completion is 100% even with unfinished tasks"
+    },
+    {
+      "id": "BUG-12",
+      "screen": "Team",
+      "type": "validation-bypass",
+      "summary": "Invite accepts an empty/invalid email and adds a blank member.",
+      "oracle": "brain judgment",
+      "repro": "Team → Invite with empty field → a blank member is added"
+    },
+    {
+      "id": "BUG-13",
+      "screen": "Team",
+      "type": "wrong-target",
+      "summary": "Remove always deletes the FIRST member, not the row clicked.",
+      "oracle": "brain / verify-after-act",
+      "repro": "Team → Remove the 2nd member → the 1st disappears instead"
+    }
+  ]
+}

@@ -3,18 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sample Buggy App</title>
-    <style>
-      body { font-family: system-ui, sans-serif; max-width: 480px; margin: 4rem auto; }
-      input, button { font-size: 1rem; padding: 0.5rem; }
-      #toast { margin-top: 1rem; color: green; min-height: 1.5rem; }
-    </style>
+    <title>Acme Workspace — Sample Buggy App</title>
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <h1>Settings</h1>
-    <input id="name" placeholder="Your name" />
-    <button id="save">Save</button>
-    <div id="toast"></div>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="brand">▣ Acme Workspace</div>
+        <nav id="nav">
+          <a href="#/dashboard" data-route="dashboard">Dashboard</a>
+          <a href="#/tasks" data-route="tasks">Tasks <span id="nav-task-count" class="pill"></span></a>
+          <a href="#/cart" data-route="cart">Cart <span id="nav-cart-count" class="pill"></span></a>
+          <a href="#/reports" data-route="reports">Reports</a>
+          <a href="#/team" data-route="team">Team</a>
+          <a href="#/profile" data-route="profile">Profile</a>
+          <a href="#/settings" data-route="settings">Settings</a>
+          <a href="#/billing" data-route="billing">Billing</a>
+          <a href="#/about" data-route="about">About</a>
+        </nav>
+        <div class="sb-foot">v2.0.0 · build 1042</div>
+      </aside>
+      <main id="view" class="view"><!-- router renders here --></main>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script type="module" src="/main.js"></script>
   </body>
 </html>

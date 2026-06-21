@@ -20,6 +20,7 @@ class Surface(str, Enum):
     ELECTRON = "electron"
     ANDROID = "android"
     IOS = "ios"
+    MACOS = "macos"  # native AppKit/SwiftUI Mac apps (AX tree + CGEvent, local only)
 
 
 class SessionState(str, Enum):
@@ -109,6 +110,9 @@ class Finding(BaseModel):
     logs: list[str] = Field(default_factory=list)
     suspected_area: str = ""
     screenshot_refs: list[str] = Field(default_factory=list)
+    # Where on screenshot_refs[0] the bug is, as [x1,y1,x2,y2] ratios (0..1) — drives
+    # the clickable marker in the replay. Empty when the bug has no on-screen location.
+    bbox: list[float] = Field(default_factory=list)
     trace_id: str = ""
     status: str = "open"  # open | fixed | verified | dismissed
     pr_url: str | None = None
@@ -136,6 +140,7 @@ class SessionRecord(BaseModel):
     surface: Surface
     dev_command: str | None = None
     goal: str = ""
+    alias: str | None = None  # optional human name (e.g. "checkout-flow") for links/dashboard
     state: SessionState = SessionState.CREATED
     task_id: str | None = None
     trace_id: str = Field(default_factory=lambda: new_id("trc"))

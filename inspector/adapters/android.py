@@ -1,343 +1,317 @@
 from __future__ import annotations
 
-import os
+import re
 import time
+from xml.etree import ElementTree
 
 from ..config import Config
 from ..models import ActionType, Surface
-from ..planes.android import RedroidRuntime
-from ..planes.linux import LinuxPlane
 from .base import InputAction, SurfaceAdapter
 
-APK_DIR = "/home/user/app"
-BUILD_DIR = "/home/user/app/android"
+# Android keyevent codes for the keys the loop emits (input keyevent <code>).
+_KEYCODES = {
+    "Return": 66, "Enter": 66, "Tab": 61, "Escape": 111, "Back": 4,
+    "Backspace": 67, "Home": 3, "Space": 62, "Delete": 67,
+}
+
+# uiautomator classes that are interactive even without clickable="true".
+_INTERACTIVE_CLASSES = ("Button", "EditText", "CheckBox", "Switch", "ImageButton", "RadioButton")
 
 
 class AndroidAdapter(SurfaceAdapter):
-    """Android via Redroid + adb inside an E2B Linux sandbox. See docs/11 Part J.
+    """Drive an Android app on Redroid over adb (see infra/android-redroid/, docs/11 J).
 
-    The adapter:
-      1. Boots the LinuxPlane (E2B sandbox)
-      2. Starts a Redroid container inside it
-      3. Builds the APK (Expo/RN/native Gradle)
-      4. Installs + launches the app via adb
-      5. Interacts via adb input, captures via adb screencap, detects crashes via logcat
+    Same SurfaceAdapter contract as web/Electron — only the transport changes:
+    screencap = eyes, `input` = hands, logcat = ears, uiautomator = the "DOM".
+    The device-touching calls go through AdbTransport (mockable); the parsing/command
+    helpers are pure and unit-tested with no device.
     """
 
     surface = Surface.ANDROID
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, adb=None):
         self.config = config
-        self.plane = LinuxPlane(config)
-        self.redroid: RedroidRuntime | None = None
+        self.adb = adb           # AdbTransport; created in launch() if not injected
+        self.plane = None        # RedroidRuntime
         self.package: str | None = None
-        self._screen_w = 1080
-        self._screen_h = 1920
-        self._log_offset = 0
-        self._node_path = "export PATH=/home/user/node/bin:$PATH"
-        self._android_env = ""
-        self._sdk_root = "/home/user/android-sdk"
+        self.activity: str | None = None
+        self._size: tuple[int, int] | None = None
 
+    # --- lifecycle ---
     def launch(self, repo_path: str, dev_command: str | None = None) -> None:
-        # Boot the E2B sandbox
-        self.plane.start()
+        # ATTACH mode: an already-installed app on a running (or AVD-bootable) emulator.
+        # Skips the source build entirely — drive what's already on the device.
+        if getattr(self.config, "android_package", None):
+            self._launch_attached()
+            return
 
-        # Upload the app source
-        self.plane.upload(repo_path, APK_DIR)
+        # 1) build the APK from source (gradle / expo prebuild), locally
+        from ..android_build import AndroidBuilder  # M2.3 — not yet implemented
 
-        # Install adb + docker prerequisites
-        self._install_prereqs()
+        build = AndroidBuilder(self.config).build(repo_path)
+        self.package, self.activity = build.package, build.activity
 
-        # Start Redroid
-        self.redroid = RedroidRuntime(
-            self.plane,
-            width=self._screen_w,
-            height=self._screen_h,
+        # 2) boot the local Android Emulator (no remote host / SSH / kernel modules)
+        #    and get a LOCAL adb transport to it.
+        self.plane = self._make_runtime()
+        serial = self.plane.start()                 # emulator -avd … → "emulator-5554"
+        self.adb = self.adb or self._make_transport(serial)
+        self.adb.wait_for_device()
+
+        # 3) keep the screen awake, install + launch; clear logcat first
+        self._wake()
+        self.adb.install(build.apk_path)
+        self.adb.shell("logcat -c")
+        self.adb.shell(f"am start -n {self.package}/{self.activity}")
+
+    def _launch_attached(self) -> None:
+        """Attach to an already-installed package — no build, no install.
+
+        Picks a device (configured serial → first running emulator → boot the AVD),
+        resolves the app's launch activity, wakes the screen, and starts it. Only boots
+        (and therefore later stops) the emulator if none was already running.
+        """
+        self.package = self.config.android_package
+        serial = self._resolve_serial()
+        if serial:
+            self.adb = self.adb or self._make_transport(serial)  # attach to existing
+        else:
+            self.plane = self._make_runtime()                    # boot the AVD ourselves
+            serial = self.plane.start()
+            self.adb = self.adb or self._make_transport(serial)
+        self.adb.wait_for_device()
+
+        self._wake()
+        component = self.config.android_activity or resolve_component(
+            self.adb.shell(f"cmd package resolve-activity --brief {self.package}")
         )
-        self.redroid.start()
+        self.activity = component
+        self.adb.shell("logcat -c")
+        if component:
+            self.adb.shell(f"am start -n {component}")
+        else:  # no resolvable activity → launcher intent
+            self.adb.shell(
+                f"monkey -p {self.package} -c android.intent.category.LAUNCHER 1"
+            )
 
-        # Build the APK
-        apk_path = self._build_apk(dev_command)
+    def _resolve_serial(self) -> str | None:
+        """The device to attach to: configured serial, else the first running one.
+        None means 'nothing running' → the caller boots an AVD."""
+        if self.config.android_serial:
+            return self.config.android_serial
+        try:
+            import subprocess
 
-        # Install the APK
-        self.redroid.install(apk_path)
+            from ..planes.android import _sdk_bin
+            out = subprocess.run(
+                [_sdk_bin("platform-tools", "adb"), "devices"],
+                capture_output=True, text=True, timeout=15,
+            ).stdout
+        except Exception:
+            return None
+        return first_device_serial(out)
 
-        # Detect the package name
-        self.package = self._detect_package(apk_path)
-
-        # Clear logcat before launch
-        self.redroid.logcat_clear()
-
-        # Launch the app
-        self.redroid.launch(self.package)
-
-    def is_ready(self, timeout_s: float = 30.0) -> bool:
-        """Wait until the app's main activity is in the foreground."""
-        if not self.redroid or not self.package:
-            return False
+    def is_ready(self, timeout_s: float = 60.0) -> bool:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
-            pid = self.redroid.pid_of(self.package)
-            if pid:
-                time.sleep(2)  # settle time
+            out = self.adb.shell("dumpsys activity activities | grep -E 'mResumedActivity|ResumedActivity'")
+            if self.package and self.package in out:
+                self._wake()        # display ON before the first screencap
+                time.sleep(1.0)     # let the first frame paint
                 return True
-            time.sleep(1)
+            time.sleep(1.0)
         return False
 
+    def _wake(self) -> None:
+        """Keep the display on + unlocked so screencap never returns an empty (asleep)
+        frame — the failure that made OmniParser reject the image. Idempotent."""
+        self.adb.shell("svc power stayon true")
+        self.adb.shell("input keyevent KEYCODE_WAKEUP")
+        self.adb.shell("wm dismiss-keyguard")
+
+    # --- eyes ---
     def screenshot(self) -> bytes:
-        if not self.redroid:
-            raise RuntimeError("Redroid not started")
-        return self.redroid.screenshot()
-
-    def input(self, action: InputAction) -> None:
-        if not self.redroid:
-            raise RuntimeError("Redroid not started")
-
-        t = action.type
-        if t == ActionType.CLICK:
-            self.redroid.tap(action.x, action.y)
-        elif t == ActionType.DOUBLE_CLICK:
-            self.redroid.tap(action.x, action.y)
-            time.sleep(0.05)
-            self.redroid.tap(action.x, action.y)
-        elif t == ActionType.TYPE:
-            self.redroid.text(action.text or "")
-        elif t == ActionType.KEY:
-            code = _android_keycode(action.key or "")
-            self.redroid.keyevent(code)
-        elif t == ActionType.SCROLL:
-            cx, cy = self._screen_w // 2, self._screen_h // 2
-            dist = 400 * action.amount
-            if action.direction == "down":
-                self.redroid.swipe(cx, cy, cx, cy - dist)
-            elif action.direction == "up":
-                self.redroid.swipe(cx, cy, cx, cy + dist)
-            elif action.direction == "left":
-                self.redroid.swipe(cx, cy, cx + dist, cy)
-            elif action.direction == "right":
-                self.redroid.swipe(cx, cy, cx - dist, cy)
-        elif t == ActionType.WAIT:
-            time.sleep(1)
-
-    def logs(self) -> list[str]:
-        if not self.redroid or not self.package:
-            return []
-
-        lines: list[str] = []
-
-        # Check crash buffer
-        crash_log = self.redroid.logcat_crash()
-        crash_lines = crash_log.splitlines()
-        new_crash = crash_lines[self._log_offset:]
-        self._log_offset = len(crash_lines)
-        lines.extend(new_crash)
-
-        # Check if the process is still alive
-        pid = self.redroid.pid_of(self.package)
-        if not pid:
-            lines.append(f"[inspector] process {self.package} is not running (crashed?)")
-
-        return lines
-
-    def rendered_elements(self) -> list[str]:
-        # Same oracle contract as web/iOS — only the source differs: the native view
-        # hierarchy. `adb exec-out uiautomator dump /dev/tty` → parse the XML for
-        # clickable nodes' text/content-desc. Wired with the rest of M2.
-        raise NotImplementedError(
-            "AndroidAdapter.rendered_elements — uiautomator hierarchy (docs/11 Part J)"
-        )
+        # PNG straight from SurfaceFlinger's framebuffer — no desktop, no crop
+        return self.adb.exec_out("screencap -p")
 
     def screen_size(self) -> tuple[int, int]:
-        return self._screen_w, self._screen_h
+        if self._size is None:
+            self._size = parse_wm_size(self.adb.shell("wm size")) or (1080, 1920)
+        return self._size
+
+    # --- hands ---
+    def input(self, action: InputAction) -> None:
+        t = action.type
+        # guard against None coords interpolating the literal "None" into the shell cmd
+        if t in (ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.DRAG):
+            if action.x is None or action.y is None:
+                return
+        if t == ActionType.DRAG and (action.to_x is None or action.to_y is None):
+            return
+        if t in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
+            self.adb.shell(f"input tap {action.x} {action.y}")
+            if t == ActionType.DOUBLE_CLICK:
+                self.adb.shell(f"input tap {action.x} {action.y}")
+        elif t == ActionType.TYPE:
+            self.adb.shell(f"input text {escape_text(action.text or '')}")
+        elif t == ActionType.KEY:
+            code = keycode(action.key)
+            if code is not None:
+                self.adb.shell(f"input keyevent {code}")
+        elif t == ActionType.SCROLL:
+            cx, cy = self._center()
+            dist = 600 if action.direction != "up" else -600
+            self.adb.shell(f"input swipe {cx} {cy} {cx} {cy - dist} 300")
+        elif t == ActionType.DRAG:
+            if None not in (action.x, action.y, action.to_x, action.to_y):
+                self.adb.shell(f"input swipe {action.x} {action.y} {action.to_x} {action.to_y} 300")
+        elif t == ActionType.WAIT:
+            time.sleep(1.0)
+
+    # --- ears (the deterministic crash/error signal) ---
+    def logs(self) -> list[str]:
+        # Scope to the app's process so logcat doesn't return other apps' noise (the
+        # background NullPointerExceptions we saw). If the app crashed (no pid), fall
+        # back to filtering the raw buffer to our package + crash markers.
+        pid = self.adb.shell(f"pidof -s {self.package}").strip() if self.package else ""
+        raw = self.adb.logcat("crash,main", pid=pid or None)
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        if not pid and self.package:
+            lines = filter_app_logs(lines, self.package)
+        return lines
+
+    # --- the "DOM": view hierarchy for the missing-element oracle ---
+    def rendered_elements(self) -> list[str]:
+        xml = self.adb.shell("uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; cat /sdcard/ui.xml")
+        return parse_uiautomator_labels(xml)
 
     def teardown(self) -> None:
-        if self.redroid:
-            if self.package:
-                try:
-                    self.redroid.force_stop(self.package)
-                except Exception:
-                    pass
-            try:
-                self.redroid.stop()
-            except Exception:
-                pass
         try:
-            self.plane.stop()
-        except Exception:
-            pass
+            if self.adb and self.package:
+                self.adb.shell(f"am force-stop {self.package}")
+        finally:
+            if self.plane:
+                self.plane.stop()
 
     # --- helpers ---
+    def _center(self) -> tuple[int, int]:
+        w, h = self.screen_size()
+        return w // 2, h // 2
 
-    def _install_prereqs(self) -> None:
-        """Install adb, Docker, JDK, and Node in the E2B sandbox."""
-        # Node.js (same method as WebAdapter)
-        node_version = "v22.11.0"
-        node_dir = "/home/user/node"
-        self.plane.run_sync(
-            f"test -x {node_dir}/bin/node || "
-            f"(cd /home/user && curl -fsSL https://nodejs.org/dist/{node_version}/"
-            f"node-{node_version}-linux-x64.tar.xz -o node.tar.xz && "
-            f"tar -xJf node.tar.xz && mv node-{node_version}-linux-x64 {node_dir})",
-            timeout=300,
-        )
-        self._node_path = f"export PATH={node_dir}/bin:$PATH"
+    def _make_runtime(self):
+        """Pick the Android runtime. Default = local emulator (this machine); set
+        ANDROID_RUNTIME=redroid for the remote container plane."""
+        from ..planes.android import LocalEmulatorRuntime, RedroidRuntime
+        if getattr(self.config, "android_runtime", "local") == "redroid":
+            return RedroidRuntime(self.config)
+        return LocalEmulatorRuntime(self.config)
 
-        # adb
-        self.plane.run_sync(
-            "which adb || (sudo apt-get update -qq && sudo apt-get install -y -qq android-tools-adb) "
-            "2>/dev/null || true",
-            timeout=120,
-        )
-        # Docker
-        self.plane.run_sync(
-            "which docker || (curl -fsSL https://get.docker.com | sudo sh) 2>/dev/null || true",
-            timeout=180,
-        )
-        # JDK 17
-        self.plane.run_sync(
-            "which javac || (sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-17-jdk-headless) "
-            "2>/dev/null || true",
-            timeout=180,
-        )
-        # Android SDK — minimal setup: just create the directory and accept licenses.
-        # Gradle downloads the actual SDK components it needs automatically.
-        sdk_root = "/home/user/android-sdk"
-        self.plane.run_sync(f"mkdir -p {sdk_root}/licenses", timeout=5)
-        # Pre-accept all SDK licenses by writing the hash files Gradle checks
-        self.plane.run_sync(
-            f"echo -e '\\n24333f8a63b6825ea9c5514f83c2829b004d1fee' > {sdk_root}/licenses/android-sdk-license && "
-            f"echo -e '\\n84831b9409646a918e30573bab4c9c91346d8abd' > {sdk_root}/licenses/android-sdk-preview-license && "
-            f"echo -e '\\nd56f5187479451eabf01fb78af6dfcb131a6481e\\n24333f8a63b6825ea9c5514f83c2829b004d1fee' >> {sdk_root}/licenses/android-sdk-license && "
-            f"echo -e '\\ne9acab5b5fbb560a72797e95dcdf135e1b3bf903' > {sdk_root}/licenses/android-sdk-arm-dbt-license && "
-            f"echo -e '\\n859f317696f67ef3d7f30a50a5560e7834b43903' > {sdk_root}/licenses/android-googletv-license && "
-            f"echo -e '\\n33b6a2b64607f11b759f320ef9dff4ae5c47d97a' > {sdk_root}/licenses/google-gdk-license && "
-            f"echo -e '\\nd975f751698a77e662f1cd747666ef6b2c0c862f' > {sdk_root}/licenses/intel-android-extra-license && "
-            f"echo -e '\\n33b6a2b64607f11b759f320ef9dff4ae5c47d97a' > {sdk_root}/licenses/mips-android-sysimage-license",
-            timeout=10,
-        )
-        self._android_env = (
-            f"export ANDROID_HOME={sdk_root} && "
-            f"export ANDROID_SDK_ROOT={sdk_root} && "
-            f"export PATH={sdk_root}/platform-tools:$PATH"
-        )
-        self._sdk_root = sdk_root
-
-    def _build_apk(self, dev_command: str | None = None) -> str:
-        """Build the APK and return its path inside the sandbox."""
-        if dev_command:
-            self.plane.run_sync(f"cd {APK_DIR} && {dev_command}", timeout=600)
-            return self._find_apk()
-
-        # Check for package.json (Expo/RN)
-        res = self.plane.run_sync(f"test -f {APK_DIR}/package.json && echo yes", timeout=5)
-        stdout = res.stdout.strip() if res and getattr(res, "stdout", "") else ""
-
-        if stdout == "yes":
-            # npm install
-            self.plane.run_sync(
-                f"{self._node_path} && cd {APK_DIR} && npm install",
-                timeout=300,
+    def _make_transport(self, serial: str):
+        from ..adb import AdbTransport
+        # local emulator → local adb (no SSH); SSH is only for the remote redroid plane.
+        if getattr(self.config, "android_runtime", "local") == "redroid":
+            return AdbTransport(
+                serial=serial,
+                ssh_host=getattr(self.config, "android_ssh_host", None),
+                ssh_user=getattr(self.config, "android_ssh_user", None),
+                ssh_key=getattr(self.config, "android_ssh_key", None),
             )
+        return AdbTransport(serial=serial)  # local mode
 
-            # Check if Expo
-            res = self.plane.run_sync(
-                f"{self._node_path} && cd {APK_DIR} && node -e \"const p=require('./package.json'); "
-                f"console.log(p.dependencies && p.dependencies.expo ? 'expo' : 'rn')\"",
-                timeout=10,
-            )
-            framework = res.stdout.strip() if res and getattr(res, "stdout", "") else ""
 
-            if framework == "expo":
-                # Expo: prebuild then gradle
-                self.plane.run_sync(
-                    f"{self._node_path} && cd {APK_DIR} && npx expo prebuild -p android --no-install",
-                    timeout=300,
-                )
-                self._write_local_properties()
-                # expo-modules-core needs cmake; also set ANDROID_NDK_HOME
-                ndk_home = f"{self._sdk_root}/ndk/26.1.10909125"
-                self.plane.run_sync(
-                    f"{self._node_path} && {self._android_env} && "
-                    f"export ANDROID_NDK_HOME={ndk_home} && "
-                    f"cd {APK_DIR}/android && chmod +x gradlew && "
-                    f"./gradlew assembleDebug -x lint",
-                    timeout=600,
-                )
-            else:
-                # Plain React Native
-                self._write_local_properties()
-                self.plane.run_sync(
-                    f"{self._node_path} && {self._android_env} && "
-                    f"cd {APK_DIR}/android && chmod +x gradlew && ./gradlew assembleDebug",
-                    timeout=600,
-                )
-        else:
-            # Native Android (Gradle project)
-            self._write_local_properties()
-            self.plane.run_sync(
-                f"{self._node_path} && {self._android_env} && "
-                f"cd {APK_DIR} && chmod +x gradlew && ./gradlew assembleDebug",
-                timeout=600,
-            )
+# --- pure helpers (unit-tested, no device) ---
 
-        return self._find_apk()
+def first_device_serial(out: str) -> str | None:
+    """First ready device serial from `adb devices` output (skips offline/unauthorized).
+    Pure — used by attach mode to find a running emulator without booting one."""
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("List of devices"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            return parts[0]
+    return None
 
-    def _write_local_properties(self) -> None:
-        """Write local.properties so Gradle finds the Android SDK."""
-        self.plane.run_sync(
-            f"echo 'sdk.dir={self._sdk_root}' > {APK_DIR}/android/local.properties 2>/dev/null || true",
-            timeout=5,
+
+def resolve_component(out: str) -> str | None:
+    """The `pkg/activity` component from `cmd package resolve-activity --brief`. Pure.
+    The component is the last non-empty line that looks like `a.b.c/.Activity`."""
+    for line in reversed((out or "").splitlines()):
+        line = line.strip()
+        if "/" in line and " " not in line and "=" not in line:
+            return line
+    return None
+
+
+def filter_app_logs(lines: list[str], package: str) -> list[str]:
+    """Keep only the app's lines + crash markers when no pid is available (app crashed).
+    Drops unrelated background-process noise. Pure."""
+    out = []
+    for ln in lines:
+        if (package and package in ln) or "AndroidRuntime" in ln or "FATAL" in ln:
+            out.append(ln)
+    return out
+
+
+def keycode(key: str | None) -> int | None:
+    if not key:
+        return None
+    if key in _KEYCODES:
+        return _KEYCODES[key]
+    return int(key) if str(key).isdigit() else None
+
+
+def escape_text(text: str) -> str:
+    """Quote text for `adb shell input text`: spaces become %s, then shell-quote."""
+    import shlex
+    return shlex.quote(text.replace(" ", "%s"))
+
+
+def parse_wm_size(out: str) -> tuple[int, int] | None:
+    """Parse `wm size` → (w, h). Prefers an Override size over Physical if present."""
+    matches = re.findall(r"(\d+)x(\d+)", out or "")
+    if not matches:
+        return None
+    w, h = matches[-1]  # Override line (if any) is printed last
+    return int(w), int(h)
+
+
+def parse_uiautomator_labels(xml: str) -> list[str]:
+    """Interactive elements actually on screen, from the uiautomator hierarchy. Pure.
+
+    The Android analog of the web DOM dump — the 'actually rendered' side of the
+    code-aware missing-element oracle.
+    """
+    xml = _extract_hierarchy(xml)
+    if not xml:
+        return []
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for node in root.iter("node"):
+        a = node.attrib
+        interactive = a.get("clickable") == "true" or any(
+            cls in a.get("class", "") for cls in _INTERACTIVE_CLASSES
         )
-
-    def _find_apk(self) -> str:
-        """Find the built APK."""
-        res = self.plane.run_sync(
-            f"find {APK_DIR} -name '*.apk' -path '*debug*' -o -name '*.apk' | head -1",
-            timeout=15,
-        )
-        path = res.stdout.strip() if res and getattr(res, "stdout", "") else ""
-        if path:
-            return path
-        raise RuntimeError(f"No APK found after build in {APK_DIR}")
-
-    def _detect_package(self, apk_path: str) -> str:
-        """Extract the package name from the APK."""
-        res = self.redroid.adb(
-            f"shell pm list packages -f 2>/dev/null | tail -5", timeout=10,
-        )
-        # Try aapt if available
-        res2 = self.plane.run_sync(
-            f"aapt dump badging {apk_path} 2>/dev/null | head -1 || true",
-            timeout=10,
-        )
-        stdout = res2.stdout if res2 and getattr(res2, "stdout", "") else ""
-        if "package: name=" in stdout:
-            # parse: package: name='com.example.app' ...
-            start = stdout.index("name='") + 6
-            end = stdout.index("'", start)
-            return stdout[start:end]
-
-        # Fallback: read from package.json
-        res3 = self.plane.run_sync(
-            f"{self._node_path} && cd {APK_DIR} && node -e \"const p=require('./package.json'); "
-            f"console.log(p.name || 'com.inspector.sample')\" 2>/dev/null || echo com.inspector.sample",
-            timeout=10,
-        )
-        name = res3.stdout.strip() if res3 and getattr(res3, "stdout", "") else "com.inspector.sample"
-        # Expo convention: host.exp.exponent or com.<name>
-        return f"com.{name.replace('-', '')}" if "." not in name else name
+        if not interactive:
+            continue
+        label = (a.get("text") or a.get("content-desc") or "").strip()
+        if label and label not in seen:
+            seen.add(label)
+            out.append(label)
+    return out
 
 
-def _android_keycode(key: str) -> str:
-    """Map common key names to Android keycodes."""
-    mapping = {
-        "Return": "66", "Enter": "66",
-        "Tab": "61",
-        "Escape": "111",
-        "Backspace": "67", "Delete": "67",
-        "Space": "62",
-        "Home": "3",
-        "Back": "4",
-        "Up": "19", "Down": "20", "Left": "21", "Right": "22",
-    }
-    return mapping.get(key, key)
+def _extract_hierarchy(xml: str) -> str | None:
+    """Strip uiautomator's trailing 'dumped to:' chatter to the <hierarchy> span."""
+    if not xml:
+        return None
+    start = xml.find("<hierarchy")
+    end = xml.rfind("</hierarchy>")
+    if start == -1 or end == -1:
+        return None
+    return xml[start : end + len("</hierarchy>")]

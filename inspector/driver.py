@@ -44,7 +44,15 @@ _SYSTEM = (
     "bogus routes) over happy-path clicks. When you see something broken (a crash, an "
     "error toast or console error, an action that did nothing when it should have, a "
     "wrong screen, a missing element, layout overflow), report it in `bug`. When the app "
-    "has been adversarially exercised enough to judge it, choose action \"done\"."
+    "has been adversarially exercised enough to judge it, choose action \"done\".\n"
+    "EXPLORE WIDE AND DEEP: never repeat an action that already returned changed=false in "
+    "ACTIONS SO FAR — it will not work the second time. Cover every screen (navigate via "
+    "the tab/nav elements), but also go DEEP: when a screen has a form or a multi-step "
+    "flow, COMPLETE it end-to-end — fill EVERY field, submit/continue, read the result — "
+    "then navigate AWAY and RE-ENTER the same screen to check whether the state persisted. "
+    "The subtlest bugs (lost edits, stale or normalized values, wrong screen after Back, "
+    "a counter/total that's off) only surface after a SPECIFIC multi-step sequence, not a "
+    "single tap. Push several levels into nested navigation before backing out."
 )
 
 _PROTOCOL = (
@@ -214,6 +222,72 @@ def parse_verdict(text: str) -> dict:
     }
 
 
+# --- adversarial verification: try to REFUTE a flagged finding ---
+
+_REFUTE = (
+    "A UI tester flagged a possible bug in the app shown. Your job is to REFUTE it: "
+    "decide whether it is a REAL, reproducible defect or a FALSE POSITIVE (a benign log "
+    "line, expected behavior, the tester misreading the screen, or a non-issue). Be "
+    "skeptical — default to confirmed=false when uncertain or when there's no clear "
+    "evidence of breakage in the screenshot.\n\n"
+    "FLAGGED [{severity}]: {summary}\nexpected: {expected}\nactual: {actual}\n\n"
+    'Reply with ONLY JSON: {{"confirmed": true|false, "reason": "<one sentence>"}}'
+)
+
+
+def build_refute_prompt(finding: dict) -> str:
+    """Adversarial prompt asking the brain to refute a flagged finding. Pure."""
+    return _REFUTE.format(
+        severity=finding.get("severity", ""), summary=finding.get("summary", ""),
+        expected=finding.get("expected", ""), actual=finding.get("actual", ""),
+    )
+
+
+def parse_refute_verdict(text: str) -> dict:
+    """Parse the refute verdict. Pure. Defaults to NOT confirmed (skeptical)."""
+    obj = _extract_json_object(text) or {}
+    return {"confirmed": bool(obj.get("confirmed", False)),
+            "reason": _coerce_str(obj.get("reason")) or ""}
+
+
+# --- the PLANNER: decompose the app into parts to test in parallel ---
+
+_PLAN = (
+    "You are PLANNING a parallel UI test. Given the app's first screen (the screenshot "
+    "with numbered boxes) and the element list, identify the DISTINCT parts of this app "
+    "that should each be tested by a separate agent — its screens, tabs, features, or "
+    "flows (e.g. Settings, Profile, Checkout, Search). For each part give a short name "
+    "and a focused, adversarial test goal. Aim for 2-6 parts; only include parts that are "
+    "actually reachable from what you can see (nav tabs/links/buttons).\n\n"
+    "ELEMENTS:\n{elements}\n\nOVERALL GOAL: {goal}\n\n"
+    'Reply with ONLY JSON: {{"parts": [{{"name": "...", "goal": "test ..."}}]}}'
+)
+
+
+def build_plan_prompt(elements: list[Element], goal: str) -> str:
+    """Prompt asking the brain to decompose the app into parallel-testable parts. Pure."""
+    return _PLAN.format(elements=_format_elements(elements), goal=goal)
+
+
+def parse_plan(text: str) -> list[dict]:
+    """Parse the planner's decomposition into [{name, goal}]. Pure."""
+    obj = _extract_json_object(text) or {}
+    parts = obj.get("parts")
+    out: list[dict] = []
+    seen: set[str] = set()
+    if isinstance(parts, list):
+        for p in parts:
+            if not isinstance(p, dict):
+                continue
+            name = _coerce_str(p.get("name"))
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            out.append({"name": name[:40],
+                        "goal": (_coerce_str(p.get("goal")) or name)[:300]})
+    return out[:6]
+
+
 # --- the live Replicate-backed driver ---
 
 class ReplicateDriver:
@@ -241,6 +315,12 @@ class ReplicateDriver:
 
     def judge_missing_element(self, candidate, rendered: list[str], screenshot: bytes) -> dict:
         return parse_verdict(self._run_model(screenshot, build_missing_judge_prompt(candidate, rendered)))
+
+    def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
+        return parse_refute_verdict(self._run_model(screenshot, build_refute_prompt(finding)))
+
+    def plan(self, som: bytes, elements, goal: str) -> list[dict]:
+        return parse_plan(self._run_model(som, build_plan_prompt(elements, goal)))
 
     def _run_model(self, image_bytes: bytes, prompt: str) -> str:
         import replicate  # lazy
@@ -310,6 +390,18 @@ class HeuristicDriver:
         # no model to reason about conditional rendering → don't surface (avoid noise).
         return {"is_bug": False, "severity": "low", "reason": "heuristic mode — no brain to judge"}
 
+    def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
+        # no brain to refute → keep the finding as-is (don't silently drop evidence).
+        return {"confirmed": True, "reason": "heuristic mode — not verified"}
+
+    def plan(self, som: bytes, elements, goal: str) -> list[dict]:
+        # no brain → one part per nav-ish element (links/tabs), else the whole app.
+        parts = [{"name": (e.label or "").strip()[:40], "goal": f"test {e.label!r}"}
+                 for e in elements
+                 if getattr(e, "interactivity", False) and (e.role or "") in ("link", "tab")
+                 and (e.label or "").strip()]
+        return parts[:6] or [{"name": "app", "goal": goal}]
+
 
 def _is_degenerate(d: Decision) -> bool:
     """A primary decision that can't actually do anything → fall back to heuristic.
@@ -341,7 +433,13 @@ class FallbackDriver:
         self.fallback = fallback
 
     def decide(self, som, elements, goal, history, logs) -> Decision:
-        decision = self.primary.decide(som, elements, goal, history, logs)
+        try:
+            decision = self.primary.decide(som, elements, goal, history, logs)
+        except Exception:
+            # a raised error (rate-limit, token-limit, API failure) must ALSO fall back
+            # to deterministic exploration — otherwise every erroring step is a wasted
+            # no-op and the run does zero work.
+            return self.fallback.decide(som, elements, goal, history, logs)
         if _is_degenerate(decision):
             return self.fallback.decide(som, elements, goal, history, logs)
         return decision
@@ -349,6 +447,12 @@ class FallbackDriver:
     def judge_missing_element(self, candidate, rendered: list[str], screenshot: bytes) -> dict:
         # judgment needs the brain — delegate to the primary (VLM/Claude) driver.
         return self.primary.judge_missing_element(candidate, rendered, screenshot)
+
+    def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
+        return self.primary.verify_finding(finding, screenshot)
+
+    def plan(self, som: bytes, elements, goal: str) -> list[dict]:
+        return self.primary.plan(som, elements, goal)
 
 
 class AnthropicDriver:
@@ -376,6 +480,12 @@ class AnthropicDriver:
 
     def judge_missing_element(self, candidate, rendered: list[str], screenshot: bytes) -> dict:
         return parse_verdict(self._run_model(screenshot, build_missing_judge_prompt(candidate, rendered)))
+
+    def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
+        return parse_refute_verdict(self._run_model(screenshot, build_refute_prompt(finding)))
+
+    def plan(self, som: bytes, elements, goal: str) -> list[dict]:
+        return parse_plan(self._run_model(som, build_plan_prompt(elements, goal)))
 
     def _run_model(self, image_bytes: bytes, prompt: str) -> str:
         import base64

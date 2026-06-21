@@ -1,4 +1,4 @@
-from inspector.eval import match_findings
+from inspector.eval import match_findings, match_findings_semantic
 
 # real signatures from the fixture manifests
 EXPECTED = [
@@ -14,6 +14,19 @@ EXPECTED = [
 
 def _f(fid, summary="", actual="", logs=None):
     return {"id": fid, "summary": summary, "actual": actual, "logs": logs or []}
+
+
+def test_semantic_matcher_scores_from_mapping():
+    # log-free bugs: the LLM judge mapping decides detection, not signatures.
+    findings = [_f("fnd_a", "field went blank after returning"), _f("fnd_b", "noise"),
+                _f("fnd_c", "counter undercounts")]
+    mapping = {"BUG-01": ["fnd_a"], "BUG-02": [], "BUG-03": ["fnd_c"]}
+    r = match_findings_semantic(EXPECTED, findings, mapping)
+    assert r["detected"] == 2 and r["recall"] == round(2 / 3, 3)
+    assert r["true_positives"] == 2 and r["false_positives"] == 1  # fnd_b matched nothing
+    assert r["scoring"] == "semantic"
+    by_id = {b["id"]: b for b in r["per_bug"]}
+    assert by_id["BUG-01"]["detected"] and not by_id["BUG-02"]["detected"]
 
 
 def test_perfect_recall_and_precision():

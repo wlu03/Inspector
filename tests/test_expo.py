@@ -18,10 +18,19 @@ def _expo_repo(tmp_path):
     return str(tmp_path)
 
 
-def test_expo_project_routes_to_web_preview_adapter(tmp_path):
-    adapter = get_adapter(Surface.ANDROID, Config(), repo_path=_expo_repo(tmp_path))
+def test_expo_web_surface_routes_to_web_preview(tmp_path):
+    # surface="web" → fast web preview
+    adapter = get_adapter(Surface.WEB, Config(), repo_path=_expo_repo(tmp_path))
     assert isinstance(adapter, ExpoWebAdapter)
-    assert adapter.surface == Surface.WEB  # runs on the Linux/web plane
+    assert adapter.surface == Surface.WEB
+
+
+def test_expo_android_surface_routes_to_native_android(tmp_path):
+    # surface="android" → native device path (local emulator), NOT web preview
+    from inspector.adapters.android import AndroidAdapter
+    adapter = get_adapter(Surface.ANDROID, Config(), repo_path=_expo_repo(tmp_path))
+    assert isinstance(adapter, AndroidAdapter)
+    assert not isinstance(adapter, ExpoWebAdapter)
 
 
 def test_expo_adapter_inherits_web_workflow():

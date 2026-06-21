@@ -29,13 +29,16 @@ class LoopGuard:
     def tick(self) -> None:
         self.iterations += 1
 
-    def observe_state(self, screenshot: bytes, logs: list[str]) -> None:
-        digest = hashlib.sha256(screenshot + "\n".join(logs).encode()).hexdigest()
-        if digest == self._last_hash:
-            self._repeat += 1
-        else:
+    def observe_state(self, screenshot: bytes, signal: bool = False) -> None:
+        # Hash the SCREENSHOT only (folding in logs defeats no-progress on apps with
+        # heartbeat logs). `signal` = a fresh finding this step → counts as progress even
+        # if the screen is unchanged, so finding a bug doesn't trip the no-progress exit.
+        digest = hashlib.sha256(screenshot).hexdigest()
+        if signal or digest != self._last_hash:
             self._repeat = 0
-            self._last_hash = digest
+        else:
+            self._repeat += 1
+        self._last_hash = digest
 
     def exhausted(self) -> str | None:
         """Return a stop reason if a guardrail tripped, else None."""

@@ -19,7 +19,10 @@ REGISTRY: dict[Surface, type[SurfaceAdapter]] = {
 def get_adapter(surface: Surface, config: Config, repo_path: str | None = None) -> SurfaceAdapter:
     # Framework override: Expo/RN can't boot natively in the Linux plane, so run it
     # as a web preview (ExpoWebAdapter) — same workflow, real running app.
-    if repo_path:
+    # Expo/RN picks its plane by the REQUESTED surface: WEB → fast web preview
+    # (ExpoWebAdapter); ANDROID/IOS → the native device path (Android emulator / iOS
+    # simulator) via the normal registry. So `surface="android"` reaches AndroidAdapter.
+    if repo_path and surface == Surface.WEB:
         try:
             from ..launch.detect import detect_project
             if detect_project(repo_path).framework == "expo":
@@ -27,6 +30,21 @@ def get_adapter(surface: Surface, config: Config, repo_path: str | None = None) 
                 return ExpoWebAdapter(config)
         except Exception:
             pass
+    # Local execution: drive Electron on the host via CDP (no VM, no xdotool).
+    if config.execution == "local" and surface == Surface.ELECTRON:
+        from .local_electron import LocalElectronAdapter
+        return LocalElectronAdapter(config)
+    # Local web via headless Chrome — opt-in when a URL or prebuilt dist is configured
+    # (for real apps like Angular/Capacitor that don't fit the E2B build-and-serve path).
+    import os as _os
+    if (config.execution == "local" and surface == Surface.WEB
+            and (_os.environ.get("INSPECTOR_WEB_URL") or _os.environ.get("INSPECTOR_WEB_DIST"))):
+        from .local_web import LocalWebAdapter
+        return LocalWebAdapter(config)
+    # Native macOS apps are local-only (AX tree + CGEvent on the host).
+    if surface == Surface.MACOS:
+        from .macos_native import MacNativeAdapter
+        return MacNativeAdapter(config)
     return REGISTRY[surface](config)
 
 

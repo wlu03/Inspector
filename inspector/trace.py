@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 
 from .models import Action, Finding, Run, SessionRecord
 
@@ -27,12 +28,14 @@ class TraceRecorder:
         self.actions_path = os.path.join(self.dir, "actions.jsonl")
         self.logs_path = os.path.join(self.dir, "logs.jsonl")
         self._frame_n = 0
+        self._frame_lock = threading.Lock()  # the heartbeat thread also writes frames
 
     def save_frame(self, png: bytes) -> str:
-        name = f"frame_{self._frame_n:04d}.png"
+        with self._frame_lock:
+            name = f"frame_{self._frame_n:04d}.png"
+            self._frame_n += 1
         with open(os.path.join(self.frames_dir, name), "wb") as f:
             f.write(png)
-        self._frame_n += 1
         return name
 
     def record_action(self, action: Action) -> None:

@@ -1,0 +1,53 @@
+{
+  "fixture": "sample-buggy-macos",
+  "surface": "macos",
+  "framework": "swiftui-mac",
+  "bundle_id": "com.inspector.SampleBuggyMac",
+  "screens": ["Main"],
+  "notes": "Native macOS SwiftUI app. The agent grounds via the macOS accessibility tree (macax dump) and drives CGEvent taps. Bugs are observable in the window's a11y/screenshot.",
+  "scoring": "semantic",
+  "bugs": [
+    {
+      "id": "BUG-01",
+      "screen": "Main",
+      "type": "logic",
+      "severity": "high",
+      "difficulty": "obvious",
+      "log_signature": null,
+      "title": "Plus increments the count by 2 instead of 1",
+      "description": "Clicking the 'Plus' button raises the displayed Count by 2 each click instead of 1.",
+      "trigger": ["From Count 0, click 'Plus' once", "Read the Count"],
+      "expected": "Count reads 1 after one Plus.",
+      "actual": "Count reads 2 after one Plus.",
+      "expected_finding": "Reports that the Plus button increments the count by 2 (wrong amount) instead of 1."
+    },
+    {
+      "id": "BUG-02",
+      "screen": "Main",
+      "type": "logic",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "log_signature": null,
+      "title": "Reset sets the count to 1 instead of 0",
+      "description": "Clicking 'Reset' sets the Count to 1 rather than clearing it to 0.",
+      "trigger": ["Click 'Plus' a few times", "Click 'Reset'", "Read the Count"],
+      "expected": "Reset returns the Count to 0.",
+      "actual": "Reset leaves the Count at 1.",
+      "expected_finding": "Reports that Reset does not clear the count to 0 (it shows 1)."
+    },
+    {
+      "id": "BUG-03",
+      "screen": "Main",
+      "type": "state-loss",
+      "severity": "medium",
+      "difficulty": "subtle",
+      "log_signature": null,
+      "title": "Save reports success but clears the entered name",
+      "description": "After typing a name and clicking 'Save', a green 'Saved' confirmation appears but the name field is wiped to empty instead of keeping the value.",
+      "trigger": ["Type a name into 'Your name'", "Click 'Save'", "Re-read the name field"],
+      "expected": "The name persists in the field and 'Saved' appears.",
+      "actual": "'Saved' appears but the name field is now empty.",
+      "expected_finding": "Reports that saving clears/loses the entered name (the field empties) despite showing success."
+    }
+  ]
+}

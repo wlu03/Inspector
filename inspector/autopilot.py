@@ -19,12 +19,33 @@ _CHROME_TERMS = (
 )
 
 
+# Soft-keyboard keys (iOS/Android) flood the a11y tree after a TYPE action — the
+# loop must not target them or it wanders off typing 'Q' instead of testing the app.
+_KEYBOARD_LABELS = {
+    "space", "return", "delete", "shift", "more", "emoji", "dictate", "done",
+    "go", "search", "next", "globe", "backspace", "caps lock", "tab",
+}
+
+
+def _is_keyboard_key(e) -> bool:
+    label = (e.label or "").strip()
+    role = (e.role or "").lower()
+    if "keyboard" in role or role == "key":
+        return True
+    if label.lower() in _KEYBOARD_LABELS:
+        return True
+    # a single visible character is almost always a soft-keyboard key
+    return len(label) == 1 and not label.isspace()
+
+
 def _confine(elements: list) -> list:
-    """Drop elements that are clearly OS/browser chrome, keeping the explorer in-app."""
+    """Drop OS/browser chrome and soft-keyboard keys, keeping the explorer in-app."""
     out = []
     for e in elements:
         label = (e.label or "").lower()
         if any(term in label for term in _CHROME_TERMS):
+            continue
+        if _is_keyboard_key(e):
             continue
         out.append(e)
     return out
@@ -42,6 +63,8 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
     # code-aware oracle: surface elements the source declares but that didn't render.
     missing = _check_expected_elements(session, driver)
     history: list[dict] = []
+    tried_noop: set[tuple] = set()   # (action, target, text) that already did nothing
+    acted: set[int] = set()          # element ids already acted on
     steps = 0
     stop_reason = "model_done"
 
@@ -57,11 +80,26 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
         decision = _safe_decide(driver, som, _confine(elements), goal, history, logs)
 
         if decision.bug:
-            _record_bug(session, decision, history, frame_ref=_latest_frame(session))
+            # locate the bug on-screen via the element the driver was acting on, so
+            # the replay can drop a clickable marker there.
+            bbox = _bbox_for(elements, decision.target_id)
+            _record_bug(session, decision, history, frame_ref=_latest_frame(session), bbox=bbox)
 
         if decision.is_done:
             stop_reason = "model_done"
             break
+
+        # de-repetition: if the brain retries an action that already did nothing, force
+        # a fresh un-acted interactive element so the run explores instead of fixating.
+        sig = (decision.action, decision.target_id, decision.text)
+        if sig in tried_noop:
+            alt = _next_unvisited(_confine(elements), acted)
+            if alt is None:
+                stop_reason = "explored"
+                break
+            decision = Decision(action="click", target_id=alt,
+                                reason="de-rep: prior action was a no-op; exploring a new element")
+            sig = (decision.action, decision.target_id, decision.text)
 
         label = _label_for(elements, decision.target_id)
         try:
@@ -75,18 +113,32 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
             steps += 1
             continue
 
+        if decision.target_id is not None:
+            acted.add(decision.target_id)
+        if not changed:
+            tried_noop.add(sig)
+        # input-integrity oracle: after typing, read the field back — a mismatch means
+        # the app mangled the value (e.g. typed "007", field holds "7"). Catches the
+        # subtle logless input-edge bugs (the iOS a11y-state class).
+        if decision.action == "type" and decision.text and len(decision.text.strip()) >= 2:
+            _check_input_integrity(session, decision)
         history.append(_step(steps, decision, label, changed=changed))
         steps += 1
 
     _run_dom_audit(session)  # deterministic evidence tier (web/electron; no-ops elsewhere)
-    findings = collect_findings(session)
+
+    # adversarially verify judgment findings: refute speculative ones before reporting.
+    from .verify import confirmed_findings, verify_findings
+    verdicts = verify_findings(session, driver)
+    findings = confirmed_findings(session)
     return {
         "goal": goal,
         "steps": steps,
         "stop_reason": stop_reason,
         "iterations": session.guard.iterations,
-        "findings": findings,
+        "findings": findings,             # confirmed only (dismissed kept in the trace)
         "findings_total": len(findings),
+        "verification": verdicts,         # {verified, dismissed, trusted}
         "missing_elements": len(missing),
         "history": history,
     }
@@ -136,7 +188,8 @@ def _safe_decide(driver, som, elements, goal, history, logs) -> Decision:
 
 
 def _record_bug(
-    session, decision: Decision, history: list[dict], frame_ref: str | None
+    session, decision: Decision, history: list[dict], frame_ref: str | None,
+    bbox: list[float] | None = None,
 ) -> None:
     bug = decision.bug or {}
     severity = _SEVERITY.get(str(bug.get("severity", "")).lower(), Severity.MEDIUM)
@@ -154,6 +207,7 @@ def _record_bug(
         suspected_area=decision.expectation or "(autopilot judgment)",
         severity=severity,
         screenshot_refs=[frame_ref] if frame_ref else [],
+        bbox=bbox or [],
     )
     session.trace.save_finding(finding)
     session.record.findings.append(finding.id)
@@ -173,11 +227,53 @@ def collect_findings(session) -> list[dict]:
     return out
 
 
+def _check_input_integrity(session, decision) -> None:
+    """Type → read-back: flag when a field holds something other than what was typed."""
+    try:
+        st = session.adapter.control_state(decision.target_id) or {}
+    except Exception:
+        return
+    val = str(st.get("value") or "")
+    typed = (decision.text or "").strip()
+    # only flag when the field exposes a value AND it doesn't contain what we typed
+    # (an empty value = field doesn't surface its contents → can't tell, skip).
+    if not val or typed in val:
+        return
+    finding = build_finding(
+        session_id=session.record.id,
+        trace_id=session.record.trace_id,
+        summary=f"Input value mismatch: typed {typed!r} but the field holds {val!r}",
+        expected=f"the field to contain {typed!r}",
+        actual=f"the field holds {val!r}",
+        suspected_area="(input-integrity oracle)",
+        severity=Severity.MEDIUM,
+        screenshot_refs=[_latest_frame(session)] if _latest_frame(session) else [],
+    )
+    session.trace.save_finding(finding)
+    session.record.findings.append(finding.id)
+
+
+def _next_unvisited(elements, acted: set[int]) -> int | None:
+    """First interactive element id not yet acted on — the de-rep escape hatch."""
+    for e in elements:
+        if getattr(e, "interactivity", False) and e.id not in acted:
+            return e.id
+    return None
+
+
 def _label_for(elements, target_id) -> str:
     if target_id is None:
         return ""
     el = next((e for e in elements if e.id == target_id), None)
     return (el.label if el else "") or ""
+
+
+def _bbox_for(elements, target_id) -> list[float]:
+    """The acted element's bbox (ratios) — the bug's on-screen location for the marker."""
+    if target_id is None:
+        return []
+    el = next((e for e in elements if e.id == target_id), None)
+    return list(el.bbox) if el and el.bbox else []
 
 
 def _latest_frame(session) -> str | None:

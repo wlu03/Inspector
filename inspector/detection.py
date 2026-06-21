@@ -9,9 +9,25 @@ from .models import Confidence, Finding, Severity
 _MARKERS = [
     (re.compile(r"\bFATAL\b|AndroidRuntime|\bANR\b"), Severity.CRITICAL),
     (re.compile(r"\b(uncaught|unhandled)\b.*(exception|rejection)", re.I), Severity.HIGH),
-    (re.compile(r"\bTypeError\b|\bReferenceError\b|\bSyntaxError\b", re.I), Severity.HIGH),
-    (re.compile(r"\berror\b", re.I), Severity.MEDIUM),
+    (re.compile(
+        r"\bTypeError\b|\bReferenceError\b|\bSyntaxError\b|\bRangeError\b"
+        r"|\bNullPointerException\b|\bException\b"), Severity.HIGH),
+    # MEDIUM = an actual error LEVEL/tag, not the bare word "error" (which matches
+    # benign copy like "No errors", "errorRate: 0", clearError()). Anchors: the
+    # CDP-tap formats (console.error / log.error / [exception]), a standalone ERROR
+    # token, or an Android logcat `E/<tag>` error level.
+    (re.compile(r"console\.error|log\.error|\[exception\]|\bE/[A-Za-z]"
+                r"|(?<![A-Za-z])ERROR(?![A-Za-z])"), Severity.MEDIUM),
 ]
+
+# Confidence follows severity: a crash/exception is high-confidence; a generic
+# error-level line is medium (it may be benign).
+_CONFIDENCE = {
+    Severity.CRITICAL: Confidence.HIGH,
+    Severity.HIGH: Confidence.HIGH,
+    Severity.MEDIUM: Confidence.MEDIUM,
+    Severity.LOW: Confidence.LOW,
+}
 
 # A source location: an optional URL origin, then path.ext:line(:col). Matches
 # browser stack frames (http://localhost:5173/main.js:8:10), absolute paths, and
@@ -67,7 +83,7 @@ def scan_logs(lines: list[str], session_id: str = "", trace_id: str = "") -> lis
                         trace_id=trace_id,
                         summary=line[:200],
                         severity=severity,
-                        confidence=Confidence.HIGH,
+                        confidence=_CONFIDENCE.get(severity, Confidence.MEDIUM),
                         actual=line,
                         logs=[line],
                         suspected_area=location or "(from log tap)",

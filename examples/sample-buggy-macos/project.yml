@@ -1,0 +1,26 @@
+# xcodegen spec — run `xcodegen generate` to produce SampleBuggyMac.xcodeproj.
+name: SampleBuggyMac
+options:
+  bundleIdPrefix: com.inspector
+  deploymentTarget:
+    macOS: "13.0"
+targets:
+  SampleBuggyMac:
+    type: application
+    platform: macOS
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Sample Buggy Mac
+        LSMinimumSystemVersion: "13.0"
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: NO
+        PRODUCT_BUNDLE_IDENTIFIER: com.inspector.SampleBuggyMac
+        CODE_SIGNING_ALLOWED: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"

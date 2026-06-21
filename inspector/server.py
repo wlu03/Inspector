@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import atexit
+import functools
 import json
+import logging
 import os
 import threading
 
-from fastmcp import FastMCP
+import anyio
+from fastmcp import Context, FastMCP
 from fastmcp.utilities.types import Image
+from mcp.types import ToolAnnotations
 
 from . import detection
 from .config import Config
@@ -18,6 +22,85 @@ from .session import SessionManager
 CONFIG = Config.from_env()
 MANAGER = SessionManager(CONFIG)
 mcp = FastMCP("Inspector")
+log = logging.getLogger("inspector")
+
+# Tool annotation presets so hosts (Claude Code) can auto-approve safe tools and only
+# prompt on the ones with real side effects. READ_ONLY = no mutation (auto-approve);
+# WRITE = mutates the trace/app but cheap/safe; DESTRUCTIVE = spins or tears a *billed*
+# sandbox → worth a confirmation prompt.
+READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
+
+
+def _friendly(fn):
+    """Turn a raw KeyError from an unknown/expired session_id into a usable dict.
+
+    Wraps the live-session tools so the host gets {error, active_sessions, hint}
+    instead of an ugly stack trace + a dead turn.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except KeyError as exc:
+            with MANAGER._lock:
+                active = list(MANAGER.sessions.keys())
+            return {
+                "error": "unknown or expired session",
+                "detail": str(exc).strip('"'),
+                "active_sessions": active,
+                "hint": "call launch_app or test_app to start one "
+                        "(or list_runs / get_run for past runs on disk)",
+            }
+        except Exception as exc:  # noqa: BLE001
+            # a dead sandbox / CDP / adb error mid-session must return a structured
+            # error, not escape the tool and kill the host's turn.
+            return {"error": "tool failed", "detail": str(exc)[:300]}
+    return wrapper
+
+
+async def _run_with_heartbeat(ctx, label: str, fn):
+    """Run blocking `fn` off the event loop, emitting a liveness heartbeat until done.
+
+    Turns a 30–120s frozen tool call into streamed progress ("still working (Ns)")
+    so the user sees the cold boot is alive. Re-raises whatever `fn` raises.
+    """
+    state: dict = {}
+
+    async def runner():
+        try:
+            state["result"] = await anyio.to_thread.run_sync(fn)
+        except BaseException as exc:  # noqa: BLE001 - surfaced after the group
+            state["error"] = exc
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(runner)
+        ticks = 0
+        while "result" not in state and "error" not in state:
+            await anyio.sleep(3)
+            ticks += 1
+            if ctx is not None:
+                try:
+                    await ctx.report_progress(progress=min(10 + ticks * 7, 95), total=100)
+                    await ctx.info(f"{label}… still working ({ticks * 3}s)")
+                except Exception:
+                    pass
+    if "error" in state:
+        raise state["error"]
+    return state.get("result")
+
+
+async def _say(ctx, message: str, progress: int | None = None) -> None:
+    """Best-effort ctx.info + optional progress (no-op if the client can't receive)."""
+    if ctx is None:
+        return
+    try:
+        await ctx.info(message)
+        if progress is not None:
+            await ctx.report_progress(progress=progress, total=100)
+    except Exception:
+        pass
 
 
 @atexit.register
@@ -27,7 +110,7 @@ def _cleanup_all() -> None:
         try:
             MANAGER.stop(sid)
         except Exception:
-            pass
+            log.warning("cleanup teardown failed for %s", sid, exc_info=True)
 
 
 def _result(image: Image, data: dict):
@@ -45,29 +128,146 @@ def _bg_launch(session, dev_command: str | None) -> None:
     try:
         session.launch(dev_command)
     except Exception as exc:  # noqa: BLE001
-        session._launch_error = str(exc)[:300]  # state is already ERROR (+ torn down)
+        session._launch_error = str(exc)[:300]
+        # ensure the billed sandbox is released even if launch() raised before its own
+        # teardown ran (e.g. sandbox.start() itself failed) — the sync path does this too.
+        try:
+            MANAGER.stop(session.record.id)
+        except Exception:
+            pass
 
 
-@mcp.tool
-def launch_app(
+def _live_sessions() -> dict:
+    """Currently-running sessions for the dashboard's live feed (GET /live.json).
+
+    Read straight off the live SessionManager — findings/frames grow during a run,
+    so the dashboard can show in-progress work mid-run (the static files only update
+    when the run ends).
+    """
+    with MANAGER._lock:
+        sessions = list(MANAGER.sessions.values())
+    out = []
+    for s in sessions:
+        rec = s.record
+        out.append({
+            "id": rec.id,
+            "alias": rec.alias,
+            "surface": rec.surface.value,
+            "goal": rec.goal,
+            "state": rec.state.value,
+            "findings": len(rec.findings),
+            "frames": getattr(s.trace, "_frame_n", 0),
+            "created_at": rec.created_at,
+        })
+    return {"sessions": out}
+
+
+def _rebuild_dashboard() -> None:
+    """Re-render the static dashboard so a status change shows up immediately."""
+    try:
+        from .dashboard import build_dashboard
+
+        build_dashboard(CONFIG.trace_root)
+    except Exception:
+        log.warning("dashboard rebuild failed", exc_info=True)
+
+
+def _devin_fix(signature: str) -> dict:
+    """Start a Devin fix for one ledger issue, then refresh the dashboard."""
+    from . import devin
+
+    out = devin.fix_with_devin(CONFIG, CONFIG.trace_root, signature)
+    if not out.get("error"):
+        _rebuild_dashboard()
+    return out
+
+
+def _devin_poll(devin_session_id: str) -> dict:
+    """Poll a Devin session; refresh the dashboard if a PR landed."""
+    from . import devin
+
+    out = devin.poll_devin(CONFIG, CONFIG.trace_root, devin_session_id)
+    if out.get("pr_url"):
+        _rebuild_dashboard()
+    return out
+
+
+def _resolve_signature(body: dict) -> str | None:
+    """A bug signature from an explicit `signature` OR a `session_id`+`finding_id` —
+    so any surfaced finding (a replay card, not just a ledger row) can launch Devin."""
+    sig = body.get("signature")
+    if not sig and body.get("session_id") and body.get("finding_id"):
+        from .dashboard.aggregate import signature_for_finding
+        sig = signature_for_finding(CONFIG.trace_root, body["session_id"], body["finding_id"])
+    return sig
+
+
+def _dashboard_action(path: str, body: dict) -> dict:
+    """Dispatch dashboard POST /api/* actions (the Fix with Devin button)."""
+    if path == "/api/devin-fix":
+        sig = _resolve_signature(body)
+        return _devin_fix(sig) if sig else {"error": "missing signature or session_id+finding_id"}
+    if path == "/api/devin-status":
+        sid = body.get("devin_session_id") or body.get("session_id")
+        return _devin_poll(sid) if sid else {"error": "missing devin_session_id"}
+    return {"error": f"unknown action {path}"}
+
+
+def _dashboard_links(session_id: str | None = None) -> dict:
+    """Rebuild + serve the dashboard, return a clickable localhost link for the run.
+
+    Folded into every test-finishing tool so the user lands on the replay of what the
+    agent just surfaced. Degrades quietly (returns {}) if the server can't start.
+    """
+    try:
+        from .dashboard import serve as _serve
+
+        _serve.set_live_provider(_live_sessions)  # power the live feed
+        _serve.set_action_handler(_dashboard_action)  # power the Fix with Devin button
+        publish = _serve.publish
+
+        links = publish(CONFIG.trace_root, session_id, CONFIG.dashboard_port)
+        url = links.get("dashboard_url", "")
+        links["view"] = f"✅ Test session complete. View what the agent surfaced → {url}"
+
+        # surface the fix-loop delta vs the previous run of this repo
+        from .dashboard.aggregate import latest_update
+        upd = latest_update(CONFIG.trace_root)
+        if upd.get("has_prev"):
+            fixed, new = len(upd.get("verified", [])), len(upd.get("new", []))
+            links["update"] = {"fixed_since_last_run": fixed, "new": new,
+                               "still_open": len(upd.get("still_open", []))}
+            if fixed or new:
+                links["view"] += f"  ·  {fixed} fixed since last run, {new} new (see Bug Ledger tab)"
+        return links
+    except Exception as exc:  # noqa: BLE001
+        log.warning("dashboard publish failed", exc_info=True)
+        return {"dashboard_error": str(exc)[:200]}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def launch_app(
     repo_path: str,
     surface: str | None = None,
     dev_command: str | None = None,
     goal: str = "",
     wait: bool = True,
+    alias: str | None = None,
+    ctx: Context = None,
 ) -> dict:
     """Boot the app in a sandbox and (by default) wait until it's interactive.
 
     Detects the framework/dev command and launches it on the right surface.
     Returns the session_id used by the other tools. On failure the sandbox is torn
-    down so nothing is leaked.
+    down so nothing is leaked. Pass `alias` to give the run a human name (e.g.
+    "checkout-flow") usable in place of the session_id in later tools.
 
-    Cold boot can take 30-120s (deps + browser + dev server). Pass `wait=false` to
-    return immediately with `state="launching"` and poll `launch_status(session_id)`
-    until `ready` — avoids host tool-call timeouts on a real cold boot.
+    Cold boot can take 30-120s (deps + browser + dev server); progress is streamed.
+    Pass `wait=false` to return immediately with `state="launching"` and poll
+    `launch_status(session_id)` until `ready`.
     """
     surf = Surface(surface) if surface else None
-    session = MANAGER.create(repo_path, surf, goal)
+    session = MANAGER.create(repo_path, surf, goal, alias=alias)
     sid = session.record.id
 
     if not wait:
@@ -76,7 +276,7 @@ def launch_app(
             name=f"launch-{sid}", daemon=True,
         ).start()
         return {
-            "session_id": sid,
+            "session_id": sid, "alias": session.record.alias,
             "surface": session.record.surface.value,
             "state": session.record.state.value,
             "ready": None,
@@ -84,26 +284,28 @@ def launch_app(
             "note": "launching in background — poll launch_status(session_id) until ready",
         }
 
+    await _say(ctx, "Booting sandbox — cold boot can take 30–120s (deps + browser + dev server)…", 5)
     try:
-        ready = session.launch(dev_command)
+        ready = await _run_with_heartbeat(ctx, "Launching", lambda: session.launch(dev_command))
     except Exception as exc:
         MANAGER.stop(sid)  # kill the sandbox, drop the session
+        await _say(ctx, f"launch failed: {str(exc)[:120]}")
         return {
-            "session_id": sid,
+            "session_id": sid, "alias": session.record.alias,
             "surface": session.record.surface.value,
-            "state": "error",
-            "ready": False,
-            "error": str(exc)[:300],
+            "state": "error", "ready": False, "error": str(exc)[:300],
         }
+    await _say(ctx, "ready" if ready else "launched but not interactive", 100)
     return {
-        "session_id": sid,
+        "session_id": sid, "alias": session.record.alias,
         "surface": session.record.surface.value,
         "state": session.record.state.value,
         "ready": ready,
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
+@_friendly
 def launch_status(session_id: str) -> dict:
     """Poll a background launch (from `launch_app(wait=false)`).
 
@@ -123,7 +325,8 @@ def launch_status(session_id: str) -> dict:
     return out
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
+@_friendly
 def observe(session_id: str, include_image: bool = True):
     """Screenshot the running app and return a Set-of-Mark image + element list + recent logs.
 
@@ -145,7 +348,8 @@ def observe(session_id: str, include_image: bool = True):
     return data
 
 
-@mcp.tool
+@mcp.tool(annotations=WRITE)
+@_friendly
 def act(
     session_id: str,
     type: str,
@@ -171,7 +375,8 @@ def act(
     return data
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
+@_friendly
 def verify(session_id: str, expectation: str):
     """Observe the app and report whether a NEW error signal appeared, with a screenshot.
 
@@ -210,7 +415,8 @@ def verify(session_id: str, expectation: str):
     return _result(Image(data=som, format="png"), data)
 
 
-@mcp.tool
+@mcp.tool(annotations=WRITE)
+@_friendly
 def report_issue(
     session_id: str,
     summary: str,
@@ -251,37 +457,22 @@ def report_issue(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=WRITE)
 def update_finding_status(session_id: str, finding_id: str, status: str) -> dict:
     """Record fix-loop progress on a finding: open | fixed | verified | dismissed.
 
     Mark a finding `fixed` after editing the code, then `verified` once a re-run no
     longer reproduces it — closing the find → fix → re-verify loop. (Re-verify by
     re-running the app and checking the signature is gone — e.g. a fresh `test_app`
-    run or `inspector.eval`.)
+    run or `inspector.eval`.) Works on any session on disk, live or long-finished —
+    so the dashboard fix loop can sign off past runs too.
     """
-    valid = {"open", "fixed", "verified", "dismissed"}
-    if status not in valid:
-        return {"error": f"status must be one of {sorted(valid)}"}
-    session = MANAGER.get(session_id)
-    fdir = session.trace.findings_dir
-    if os.path.isdir(fdir):
-        for name in os.listdir(fdir):
-            path = os.path.join(fdir, name)
-            try:
-                with open(path) as f:
-                    data = json.load(f)
-            except Exception:
-                continue
-            if data.get("id") == finding_id:
-                data["status"] = status
-                with open(path, "w") as f:
-                    json.dump(data, f, indent=2)
-                return {"finding_id": finding_id, "status": status}
-    return {"error": f"unknown finding {finding_id!r}"}
+    from .dashboard.aggregate import update_finding_status as _update
+    return _update(CONFIG.trace_root, session_id, finding_id, status)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
+@_friendly
 def audit_dom(session_id: str) -> dict:
     """Run a DETERMINISTIC DOM audit (web/Electron) and file any issues as findings.
 
@@ -303,7 +494,8 @@ def audit_dom(session_id: str) -> dict:
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
+@_friendly
 def get_findings(session_id: str) -> list:
     """Return the findings collected this session (from the deterministic log tap)."""
     session = MANAGER.get(session_id)
@@ -316,6 +508,171 @@ def get_findings(session_id: str) -> list:
     return out
 
 
+# --- dashboard & cross-session fix loop ---
+
+@mcp.tool(annotations=READ_ONLY)
+def open_dashboard(session_id: str | None = None) -> dict:
+    """Build + serve the dashboard on localhost and return a clickable link.
+
+    Aggregates every past session into one replayable dashboard, starts a local
+    server (http://127.0.0.1:<dashboard_port>), and returns `dashboard_url`. Pass a
+    `session_id` to deep-link straight to that run (the row is highlighted) and also
+    get a `replay_url`. This is what to hand the user after a test finishes so they
+    can view what the agent surfaced.
+    """
+    return _dashboard_links(session_id)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def build_dashboard() -> dict:
+    """Aggregate EVERY past session into one static, replayable dashboard + serve it.
+
+    Scans the trace tree (~/.inspector/sessions), ensures each session has a replay,
+    writes one dashboard.html (+ dashboard.json) rolling up findings/pass-rate/recurring
+    bugs, starts the localhost server, and returns the clickable `dashboard_url`.
+    """
+    from .dashboard.aggregate import aggregate_stats, scan_sessions
+
+    links = _dashboard_links()
+    return {**links, **aggregate_stats(scan_sessions(CONFIG.trace_root))}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_runs(limit: int = 50) -> dict:
+    """List past Inspector sessions (newest first) with verdict + findings + replay path.
+
+    The cross-session history behind the dashboard: surface, goal, pass/fail, finding
+    counts by severity, and where each run's replay lives.
+    """
+    from .dashboard.aggregate import aggregate_stats, scan_sessions
+
+    summaries = scan_sessions(CONFIG.trace_root)
+    return {"stats": aggregate_stats(summaries), "runs": summaries[:limit]}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_run(session_id: str) -> dict:
+    """Full detail for one past session: meta, plan, findings (with fix prompts), counts."""
+    from .dashboard.aggregate import load_session_detail
+
+    detail = load_session_detail(CONFIG.trace_root, session_id)
+    if not detail["session"]:
+        return {"error": f"no session {session_id!r} on disk"}
+    return {
+        "session": detail["session"],
+        "run": detail["run"],
+        "plan": detail.get("plan") or {},
+        "findings": detail["findings"],
+        "n_actions": len(detail["actions"]),
+        "n_frames": len(detail["frames"]),
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def fix_finding(session_id: str, finding_id: str) -> dict:
+    """Get the actionable fix context for one finding — the live agent fix loop.
+
+    Returns the finding plus a ready-to-apply fix prompt (summary, expected vs actual,
+    suspected file:line, repro, evidence). The host agent edits the code, marks the
+    finding `fixed` via update_finding_status, and re-runs (test_app) to verify it's
+    gone — then marks it `verified`.
+    """
+    from .dashboard.aggregate import load_session_detail
+
+    detail = load_session_detail(CONFIG.trace_root, session_id)
+    if not detail["session"]:
+        return {"error": f"no session {session_id!r} on disk"}
+    finding = next((f for f in detail["findings"] if f.get("id") == finding_id), None)
+    if finding is None:
+        return {"error": f"unknown finding {finding_id!r} in session {session_id!r}"}
+    return {
+        "finding": finding,
+        "fix_prompt": finding.get("fix_prompt", ""),
+        "suspected_area": finding.get("suspected_area", ""),
+        "next": "edit the code, then update_finding_status(session_id, finding_id, 'fixed') "
+                "and re-run test_app to verify; mark 'verified' once it no longer reproduces.",
+    }
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def verify_fix(session_id: str, finding_id: str, ctx: Context = None) -> dict:
+    """Re-verify ONE finding is fixed by replaying its exact repro on the current build.
+
+    Faster + more targeted than a full test_app re-run: it re-launches the app, replays
+    the finding's recorded actions by coordinate, and reports whether the signature
+    reappears (still_present) or is gone (fixed) — then stamps the finding accordingly.
+    Use after editing the code (or after fix_with_devin) to confirm the fix worked.
+    """
+    from .dashboard.aggregate import load_session_detail
+    from .reverify import mark_fixed
+    from .reverify import verify_fix as _verify_fix
+
+    detail = load_session_detail(CONFIG.trace_root, session_id)
+    sess = detail.get("session") or {}
+    if not sess:
+        return {"error": f"no session {session_id!r} on disk"}
+    finding = next((f for f in detail["findings"] if f.get("id") == finding_id), None)
+    if finding is None:
+        return {"error": f"unknown finding {finding_id!r} in session {session_id!r}"}
+
+    repo = sess.get("repo_path")
+    prior_dir = os.path.join(CONFIG.trace_root, session_id)
+    surface = Surface(sess["surface"]) if sess.get("surface") else None
+    summary = finding.get("summary", "")
+
+    res = await _run_with_heartbeat(
+        ctx, "re-verifying fix",
+        lambda: _verify_fix(CONFIG, repo, prior_dir, summary, surface),
+    )
+    if res.get("status") in ("fixed", "still_present"):
+        mark_fixed(prior_dir, summary, fixed=res["status"] == "fixed")
+        res["finding_id"] = finding_id
+    return res
+
+
+@mcp.tool(annotations=READ_ONLY)
+def bug_ledger() -> dict:
+    """Every unique issue across all runs with its CURRENT fix status — the fix loop, closed.
+
+    Status is evidence-based: an issue gone from a repo's latest run is `verified` (it no
+    longer reproduces = fixed); one still present is `open`. Also returns `update` — what
+    changed in the most recent run (fixed since last run / new / still-open). This is the
+    Bug Ledger tab on the dashboard: re-run after a fix and the issue flips to verified.
+    """
+    from .dashboard.aggregate import bug_ledger as _ledger
+    from .dashboard.aggregate import latest_update
+
+    ledger = _ledger(CONFIG.trace_root)
+    return {
+        "ledger": ledger,
+        "open": sum(1 for g in ledger if g.get("status") == "open"),
+        "verified": sum(1 for g in ledger if g.get("status") == "verified"),
+        "update": latest_update(CONFIG.trace_root),
+    }
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def fix_with_devin(signature: str = "", session_id: str = "", finding_id: str = "") -> dict:
+    """Hand any surfaced issue to Devin AI — it opens a PR with the fix.
+
+    Identify the issue by `signature` (from `bug_ledger()` / a dashboard row) OR by a
+    specific `session_id`+`finding_id` (any finding from `get_findings`/`get_run`/a
+    replay). Starts a Devin session (capped by devin_max_acu), marks it `fixing`, and
+    returns the Devin `devin_url`. Re-run `test_app` after the PR merges and the issue
+    auto-verifies. Needs `DEVIN_API_KEY`.
+    """
+    sig = _resolve_signature(
+        {"signature": signature, "session_id": session_id, "finding_id": finding_id}
+    )
+    return _devin_fix(sig) if sig else {"error": "provide signature or session_id+finding_id"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def devin_status(devin_session_id: str) -> dict:
+    """Poll a Devin fix session; if it opened a PR, record `pr_url` on the issue."""
+    return _devin_poll(devin_session_id)
+
+
 def _stop_and_replay(session_id: str) -> dict:
     """Persist the session, release the billed sandbox, then render the replay."""
     out: dict = {"ok": True}
@@ -325,7 +682,7 @@ def _stop_and_replay(session_id: str) -> dict:
         try:
             session.trace.save_session(session.record)
         except Exception:
-            pass
+            log.warning("save_session failed for %s", session_id, exc_info=True)
 
     MANAGER.stop(session_id)  # release the billed sandbox BEFORE rendering the replay
 
@@ -336,39 +693,31 @@ def _stop_and_replay(session_id: str) -> dict:
             write_replay_video(trace_dir)
             out["replay"] = write_replay_html(trace_dir)
         except Exception:
-            pass
+            log.warning("replay render failed for %s", session_id, exc_info=True)
+
+    # rebuild + serve the dashboard and hand back a clickable localhost link to this run
+    out.update(_dashboard_links(session_id))
     return out
 
 
-@mcp.tool
+@mcp.tool(annotations=DESTRUCTIVE)
 def stop(session_id: str) -> dict:
     """Tear down the sandbox (released first), then write the replay (html + video)."""
+    # resolve an alias to its id so `stop("checkout-flow")` works too
+    try:
+        session_id = MANAGER.get(session_id).record.id
+    except KeyError:
+        pass
     return _stop_and_replay(session_id)
 
 
-@mcp.tool
-def test_app(
-    repo_path: str,
-    goal: str = "exercise the main user flows and find bugs",
-    surface: str | None = None,
-    dev_command: str | None = None,
-    max_steps: int | None = None,
-) -> dict:
-    """ONE CALL: launch the app in a VM, autonomously explore it, and return the bugs found.
-
-    This is the hands-free entry point — it does internally what the granular
-    tools do step-by-step. It boots the app in a sandbox, then loops
-    observe → (embedded driver model picks the next action) → act, judging each
-    step for crashes/console errors/broken behavior, until the driver decides it's
-    seen enough or a LoopGuard tripwire (max steps / wall-clock / no-progress)
-    fires. Always tears the sandbox down and writes a replay. Never auto-fixes —
-    it reports reproducible findings for review.
-    """
+def _test_app_sync(repo_path, goal, surface, dev_command, max_steps, alias) -> dict:
+    """The blocking autopilot body (launch → explore → teardown + replay + dashboard)."""
     from .autopilot import collect_findings, run_autopilot
     from .driver import get_driver
 
     surf = Surface(surface) if surface else None
-    session = MANAGER.create(repo_path, surf, goal)
+    session = MANAGER.create(repo_path, surf, goal, alias=alias)
     sid = session.record.id
 
     try:
@@ -376,7 +725,8 @@ def test_app(
     except Exception as exc:
         result = _stop_and_replay(sid)
         return {
-            "session_id": sid, "surface": session.record.surface.value,
+            "session_id": sid, "alias": session.record.alias,
+            "surface": session.record.surface.value,
             "ready": False, "error": str(exc)[:300],
             "findings": [], "findings_total": 0, **result,
         }
@@ -386,7 +736,8 @@ def test_app(
         findings = collect_findings(session)
         result = _stop_and_replay(sid)
         return {
-            "session_id": sid, "surface": session.record.surface.value,
+            "session_id": sid, "alias": session.record.alias,
+            "surface": session.record.surface.value,
             "ready": False, "error": "app never became interactive",
             "findings": findings, "findings_total": len(findings), **result,
         }
@@ -398,24 +749,153 @@ def test_app(
         findings = collect_findings(session)
         result = _stop_and_replay(sid)
         return {
-            "session_id": sid, "surface": session.record.surface.value,
+            "session_id": sid, "alias": session.record.alias,
+            "surface": session.record.surface.value,
             "ready": True, "error": str(exc)[:300],
             "findings": findings, "findings_total": len(findings), **result,
         }
 
     result = _stop_and_replay(sid)  # teardown + replay AFTER the loop finishes
     return {
-        "session_id": sid,
+        "session_id": sid, "alias": session.record.alias,
         "surface": session.record.surface.value,
-        "ready": True,
-        **report,
-        **result,
+        "ready": True, **report, **result,
     }
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def test_app(
+    repo_path: str,
+    goal: str = "exercise the main user flows and find bugs",
+    surface: str | None = None,
+    dev_command: str | None = None,
+    max_steps: int | None = None,
+    alias: str | None = None,
+    ctx: Context = None,
+) -> dict:
+    """ONE CALL: launch the app in a VM, autonomously explore it, and return the bugs found.
+
+    This is the hands-free entry point — it does internally what the granular
+    tools do step-by-step. It boots the app in a sandbox, then loops
+    observe → (embedded driver model picks the next action) → act, judging each
+    step for crashes/console errors/broken behavior, until the driver decides it's
+    seen enough or a LoopGuard tripwire (max steps / wall-clock / no-progress)
+    fires. Always tears the sandbox down and writes a replay. Never auto-fixes —
+    it reports reproducible findings for review.
+
+    Progress is streamed during the (slow) run, and on completion the result carries
+    a clickable `dashboard_url` plus a desktop notification — so you can walk away.
+    Pass `alias` to give the run a human name in the dashboard/links.
+    """
+    await _say(ctx, f"Testing {repo_path} — launching the app + autonomously exploring…", 5)
+    result = await _run_with_heartbeat(
+        ctx, "Testing",
+        lambda: _test_app_sync(repo_path, goal, surface, dev_command, max_steps, alias),
+    )
+    await _say(ctx, result.get("view") or "test session complete", 100)
+
+    # desktop ping with the link — nobody's watching the chat on a long autonomous run
+    from .notify import notify
+    notify(
+        "Inspector — test complete",
+        f"{result.get('findings_total', '?')} findings · {result.get('dashboard_url', '')}",
+        CONFIG.notify,
+    )
+    return result
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def test_app_parallel(
+    repo_path: str,
+    goal: str = "find bugs",
+    surface: str | None = None,
+    max_agents: int = 4,
+    max_steps: int = 5,
+    ctx: Context = None,
+) -> dict:
+    """PLAN → DISPATCH → MERGE: a planner maps the app into parts, then a headless agent
+    per part traverses it IN PARALLEL to find bugs, and the findings are merged.
+
+    One scout session looks at the app and decomposes it into its distinct screens/
+    features/flows; up to `max_agents` autonomous agents then test those parts at once
+    (each its own app instance), so a many-screen app is covered concurrently instead of
+    one long serial crawl. Returns the plan, per-agent results, and the merged bug list.
+    """
+    from .parallel import planned_verify
+
+    surf = Surface(surface) if surface else None
+    await _say(ctx, f"Planning {repo_path} → fanning out up to {max_agents} agents…", 5)
+    result = await _run_with_heartbeat(
+        ctx, "Planning + parallel testing",
+        lambda: planned_verify(CONFIG, repo_path, surf, goal, max_steps, max_agents),
+    )
+    result.update(_dashboard_links())
+    await _say(ctx, f"{result.get('total_unique_findings', 0)} unique findings across "
+                    f"{result.get('agents', 0)} agents", 100)
+    return result
+
+
+def _test_feature_sync(repo_path, feature, surface, dev_command, alias, max_regions) -> dict:
+    """Cartographer body: region-decomposed deterministic lens sweep (docs/15)."""
+    from .autopilot import collect_findings
+    from .cartographer import run_regions
+
+    surf = Surface(surface) if surface else None
+    goal = f"inspect feature: {feature}" if feature else "inspect for bugs (cartographer)"
+    session = MANAGER.create(repo_path, surf, goal, alias=alias)
+    sid = session.record.id
+    try:
+        ready = session.launch(dev_command)
+    except Exception as exc:
+        return {"session_id": sid, "surface": session.record.surface.value, "ready": False,
+                "error": str(exc)[:300], "fixes": [], "findings": [], **_stop_and_replay(sid)}
+    if not ready:
+        return {"session_id": sid, "surface": session.record.surface.value, "ready": False,
+                "error": "app never became interactive", "fixes": [], "findings": [], **_stop_and_replay(sid)}
+    try:
+        report = run_regions(session, max_regions=max_regions)
+    except Exception as exc:
+        return {"session_id": sid, "surface": session.record.surface.value, "ready": True,
+                "error": str(exc)[:300], "fixes": [], "findings": collect_findings(session), **_stop_and_replay(sid)}
+    findings = collect_findings(session)  # same shape test_app returns → scoreable in eval
+    return {"session_id": sid, "surface": session.record.surface.value, "ready": True,
+            "feature": feature, "findings": findings, "findings_total": len(findings),
+            **report, **_stop_and_replay(sid)}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def test_feature(
+    repo_path: str,
+    feature: str | None = None,
+    surface: str | None = None,
+    dev_command: str | None = None,
+    alias: str | None = None,
+    max_regions: int = 8,
+    ctx: Context = None,
+) -> dict:
+    """Cartographer — region-decomposed DETERMINISTIC bug sweep: "I built X, hand me fixes".
+
+    Maps the running UI into regions and runs per-region scripted lens oracles
+    (LOGIC_ARITHMETIC + STATE_SYNC in Phase 0) that measure the app's OWN rendered
+    state — no LLM in the action choice, no payloads typed — and returns a RANKED FIX
+    LIST, each item carrying before/after evidence + a suggested fix. Catches the silent
+    logic/state bugs the exploratory `test_app` misses, with no self-inflicted false
+    positives. Always tears the app down and writes a replay. Pass `feature` as a label
+    for the run (diff-aware scoping is a later phase — see docs/15).
+    """
+    await _say(ctx, f"Cartographer — inspecting {repo_path}…", 5)
+    result = await _run_with_heartbeat(
+        ctx, "Inspecting",
+        lambda: _test_feature_sync(repo_path, feature, surface, dev_command, alias, max_regions),
+    )
+    await _say(ctx, f"{result.get('confirmed', 0)} fixes found", 100)
+    return result
 
 
 # --- agentic test-plan orchestration ---
 
-@mcp.tool
+@mcp.tool(annotations=WRITE)
+@_friendly
 def set_plan(session_id: str, goal: str, scenarios: list[dict]) -> dict:
     """Record the overall test plan: the scenarios (app parts/flows/edge cases) to cover.
 
@@ -437,7 +917,8 @@ def set_plan(session_id: str, goal: str, scenarios: list[dict]) -> dict:
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=WRITE)
+@_friendly
 def update_scenario(
     session_id: str,
     scenario_id: str,
@@ -469,7 +950,8 @@ def update_scenario(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY)
+@_friendly
 def test_report(session_id: str) -> dict:
     """Return the full test run: per-scenario status + notes + findings, plus totals."""
     session = MANAGER.get(session_id)
@@ -483,6 +965,7 @@ def test_report(session_id: str) -> dict:
         "totals": totals,
         "scenarios": [s.model_dump() for s in session.plan.scenarios],
         "total_findings": len(session.record.findings),
+        **_dashboard_links(session_id),  # clickable localhost link to this run's replay
     }
 
 
@@ -508,7 +991,7 @@ Target: `{repo_path}`  ·  Goal: {goal}
    c. After the key action, `verify(expectation=...)` and `get_findings(...)`. For web/Electron, call `audit_dom()` to collect deterministic a11y / broken-image / unlabeled-input findings the screenshot can't show.
    d. `update_scenario(scenario_id, status=passed|failed|..., notes=..., finding_ids=[...])`.
    e. If you discover new features mid-run, call `set_plan` again to ADAPT the plan.
-5. When no PENDING scenarios remain, `report_issue(...)` anything you SAW that the log tap missed, then `test_report()` and summarize: what passed/failed, the findings (with file:line where available), and recommended fixes.
+5. When no PENDING scenarios remain, `report_issue(...)` anything you SAW that the log tap missed, then `test_report()` and summarize: what passed/failed, the findings (with file:line where available), and recommended fixes. **Finish by giving the user the `dashboard_url` from the result as a clickable link** so they can replay the run and inspect every bug the agent surfaced.
 
 ADVERSARIAL MOVES TO TRY (consult per element type):
 {catalog_text()}
@@ -516,8 +999,90 @@ ADVERSARIAL MOVES TO TRY (consult per element type):
 Plan first, then execute scenario-by-scenario, deciding the next step each time from what you actually observe. Be thorough, but stop once the plan is covered. Never auto-fix-and-merge — report findings for review."""
 
 
+# --- MCP resources: past runs as first-class, readable context ---
+
+def _report_markdown(detail: dict) -> str:
+    """A compact markdown report the host can attach into a fix conversation."""
+    sess = detail.get("session") or {}
+    findings = detail.get("findings") or []
+    lines = [
+        f"# Inspector report — {sess.get('alias') or sess.get('id', '')}",
+        f"- surface: {sess.get('surface', '')}",
+        f"- goal: {sess.get('goal', '')}",
+        f"- repo: {sess.get('repo_path', '')}",
+        f"- findings: {len(findings)}",
+        "",
+        "## Findings",
+    ]
+    if not findings:
+        lines.append("_none_")
+    for f in findings:
+        lines.append(
+            f"- **[{f.get('severity', '?')}]** {f.get('summary', '')}"
+            + (f"  ({f.get('suspected_area')})" if f.get("suspected_area") else "")
+        )
+        if f.get("expected") or f.get("actual"):
+            lines.append(f"    - expected: {f.get('expected', '')} · actual: {f.get('actual', '')}")
+    return "\n".join(lines)
+
+
+@mcp.resource("inspector://sessions")
+def res_sessions() -> str:
+    """All past Inspector runs (summaries + cross-run stats), as JSON."""
+    from .dashboard.aggregate import aggregate_stats, scan_sessions
+
+    summaries = scan_sessions(CONFIG.trace_root)
+    return json.dumps({"stats": aggregate_stats(summaries), "sessions": summaries}, indent=2)
+
+
+@mcp.resource("inspector://sessions/{sid}/report")
+def res_report(sid: str) -> str:
+    """A readable markdown report for one run — pull straight into a fix chat."""
+    from .dashboard.aggregate import load_session_detail
+
+    detail = load_session_detail(CONFIG.trace_root, sid)
+    if not detail.get("session"):
+        return f"# Unknown session {sid!r}"
+    return _report_markdown(detail)
+
+
+@mcp.resource("inspector://sessions/{sid}/findings")
+def res_findings(sid: str) -> str:
+    """The findings for one run (with fix prompts), as JSON."""
+    from .dashboard.aggregate import load_session_detail
+
+    return json.dumps(load_session_detail(CONFIG.trace_root, sid).get("findings", []), indent=2)
+
+
 def main() -> None:
-    mcp.run()
+    """Run the MCP server. Defaults to stdio (Claude Code/Cursor); `--http` exposes it
+    over the network so a remote MCP client (e.g. Devin) can connect.
+
+        python -m inspector.server                 # stdio
+        python -m inspector.server --http          # http://127.0.0.1:8765/mcp
+        python -m inspector.server --http --host 0.0.0.0 --port 8765
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="inspector.server")
+    parser.add_argument("--transport", choices=["stdio", "http", "sse", "streamable-http"],
+                        default=None)
+    parser.add_argument("--http", action="store_true", help="shorthand for --transport http")
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--path", default=None)
+    args, _ = parser.parse_known_args()
+
+    transport = args.transport or ("http" if args.http else CONFIG.transport)
+    if transport == "stdio":
+        mcp.run()
+        return
+
+    host = args.host or CONFIG.http_host
+    port = args.port or CONFIG.http_port
+    path = args.path or CONFIG.http_path
+    log.info("Inspector MCP on %s http://%s:%s%s", transport, host, port, path)
+    mcp.run(transport=transport, host=host, port=port, path=path)
 
 
 if __name__ == "__main__":
