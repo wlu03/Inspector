@@ -63,6 +63,8 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
     # code-aware oracle: surface elements the source declares but that didn't render.
     missing = _check_expected_elements(session, driver)
     history: list[dict] = []
+    tried_noop: set[tuple] = set()   # (action, target, text) that already did nothing
+    acted: set[int] = set()          # element ids already acted on
     steps = 0
     stop_reason = "model_done"
 
@@ -87,6 +89,18 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
             stop_reason = "model_done"
             break
 
+        # de-repetition: if the brain retries an action that already did nothing, force
+        # a fresh un-acted interactive element so the run explores instead of fixating.
+        sig = (decision.action, decision.target_id, decision.text)
+        if sig in tried_noop:
+            alt = _next_unvisited(_confine(elements), acted)
+            if alt is None:
+                stop_reason = "explored"
+                break
+            decision = Decision(action="click", target_id=alt,
+                                reason="de-rep: prior action was a no-op; exploring a new element")
+            sig = (decision.action, decision.target_id, decision.text)
+
         label = _label_for(elements, decision.target_id)
         try:
             som, changed, logs = session.act(
@@ -99,6 +113,10 @@ def run_autopilot(session, driver, goal: str, max_steps: int | None = None) -> d
             steps += 1
             continue
 
+        if decision.target_id is not None:
+            acted.add(decision.target_id)
+        if not changed:
+            tried_noop.add(sig)
         history.append(_step(steps, decision, label, changed=changed))
         steps += 1
 
@@ -197,6 +215,14 @@ def collect_findings(session) -> list[dict]:
             except Exception:
                 continue
     return out
+
+
+def _next_unvisited(elements, acted: set[int]) -> int | None:
+    """First interactive element id not yet acted on — the de-rep escape hatch."""
+    for e in elements:
+        if getattr(e, "interactivity", False) and e.id not in acted:
+            return e.id
+    return None
 
 
 def _label_for(elements, target_id) -> str:

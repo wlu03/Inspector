@@ -44,7 +44,11 @@ _SYSTEM = (
     "bogus routes) over happy-path clicks. When you see something broken (a crash, an "
     "error toast or console error, an action that did nothing when it should have, a "
     "wrong screen, a missing element, layout overflow), report it in `bug`. When the app "
-    "has been adversarially exercised enough to judge it, choose action \"done\"."
+    "has been adversarially exercised enough to judge it, choose action \"done\".\n"
+    "EXPLORE FOR BREADTH: never repeat an action that already returned changed=false in "
+    "ACTIONS SO FAR — it will not work the second time. When an action does nothing, MOVE "
+    "ON to a different element or screen. Cover every screen (navigate via the tab/nav "
+    "elements) and try each control once before going deep on any one."
 )
 
 _PROTOCOL = (

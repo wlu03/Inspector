@@ -41,3 +41,55 @@ def test_auto_falls_to_replicate_without_key():
 
 def test_default_backend_is_auto():
     assert Config().driver_backend == "auto"
+
+
+# --- de-repetition: a stuck brain gets pushed to fresh elements, then stops ---
+
+def test_derep_explores_then_stops():
+    from inspector.autopilot import _next_unvisited, run_autopilot
+    from inspector.driver import Decision
+    from inspector.loop import LoopGuard
+    from inspector.models import Surface
+
+    els = [_el("Alpha"), _el("Beta")]  # multi-char so the keyboard filter keeps them
+    els[0].id, els[1].id = 0, 1
+    assert _next_unvisited(els, {0}) == 1  # id 0 acted → pick the next interactive
+
+    class _Trace:
+        findings_dir = "/nonexistent"
+        _frame_n = 0
+
+    class _Rec:
+        id = "s"
+        trace_id = "t"
+        repo_path = "/x"
+        surface = Surface.WEB
+
+        def __init__(self):
+            self.findings = []
+
+    class _Sess:
+        def __init__(self):
+            self.last_elements = els
+            self.guard = LoopGuard(max_iterations=50, max_wall_clock_s=9999)
+            self.trace = _Trace()
+            self.record = _Rec()
+
+        def observe(self):
+            return b"", els, []
+
+        def act(self, *a):
+            self.guard.tick()
+            return b"", False, []   # every action is a no-op → forces de-rep
+
+        def audit(self):
+            return {}, []
+
+    class _StuckDriver:
+        def decide(self, *a):
+            return Decision(action="click", target_id=0)  # always the same element
+
+    report = run_autopilot(_Sess(), _StuckDriver(), goal="x")
+    # both elements acted on once, then nothing left → "explored" (not the iteration cap)
+    assert report["stop_reason"] == "explored"
+    assert report["steps"] == 2
