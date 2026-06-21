@@ -5,6 +5,7 @@ console for findings, and the live DOM as the grounding source (exact element re
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -27,6 +28,9 @@ from .cdp_client import (
 )
 
 CDP_PORT = 9223
+# Per-instance CDP ports so multiple Electron sessions can run in PARALLEL (the
+# fan-out verifier) without colliding on a single debugging port.
+_port_seq = itertools.count(CDP_PORT)
 
 
 class LocalElectronAdapter(SurfaceAdapter):
@@ -38,6 +42,7 @@ class LocalElectronAdapter(SurfaceAdapter):
         self.repo_path: str | None = None
         self.cdp: CDPClient | None = None
         self._proc: subprocess.Popen | None = None
+        self._cdp_port = next(_port_seq)   # unique per session → parallel-safe
         self._viewport: tuple[int, int] = (1280, 800)  # CSS px; refined at is_ready
 
     # --- lifecycle ---
@@ -49,7 +54,7 @@ class LocalElectronAdapter(SurfaceAdapter):
         cmd = dev_command or self.project.dev_command
         # --remote-allow-origins=* : modern Chromium rejects CDP WS connections from a
         # non-allowlisted Origin with a 403, which silently fails is_ready otherwise.
-        full = (f"{cmd} -- --remote-debugging-port={CDP_PORT} "
+        full = (f"{cmd} -- --remote-debugging-port={self._cdp_port} "
                 f"--remote-allow-origins=* --no-sandbox")
         # start_new_session so teardown can kill the whole electron process group
         self._proc = subprocess.Popen(
@@ -74,11 +79,11 @@ class LocalElectronAdapter(SurfaceAdapter):
             time.sleep(1.0)
         return False
 
-    @staticmethod
-    def _page_ws_url() -> str | None:
+    def _page_ws_url(self) -> str | None:
         try:
             data = json.loads(
-                urllib.request.urlopen(f"http://localhost:{CDP_PORT}/json", timeout=2).read()
+                urllib.request.urlopen(
+                    f"http://localhost:{self._cdp_port}/json", timeout=2).read()
             )
             for t in data:
                 if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):

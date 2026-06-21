@@ -246,6 +246,44 @@ def parse_refute_verdict(text: str) -> dict:
             "reason": _coerce_str(obj.get("reason")) or ""}
 
 
+# --- the PLANNER: decompose the app into parts to test in parallel ---
+
+_PLAN = (
+    "You are PLANNING a parallel UI test. Given the app's first screen (the screenshot "
+    "with numbered boxes) and the element list, identify the DISTINCT parts of this app "
+    "that should each be tested by a separate agent — its screens, tabs, features, or "
+    "flows (e.g. Settings, Profile, Checkout, Search). For each part give a short name "
+    "and a focused, adversarial test goal. Aim for 2-6 parts; only include parts that are "
+    "actually reachable from what you can see (nav tabs/links/buttons).\n\n"
+    "ELEMENTS:\n{elements}\n\nOVERALL GOAL: {goal}\n\n"
+    'Reply with ONLY JSON: {{"parts": [{{"name": "...", "goal": "test ..."}}]}}'
+)
+
+
+def build_plan_prompt(elements: list[Element], goal: str) -> str:
+    """Prompt asking the brain to decompose the app into parallel-testable parts. Pure."""
+    return _PLAN.format(elements=_format_elements(elements), goal=goal)
+
+
+def parse_plan(text: str) -> list[dict]:
+    """Parse the planner's decomposition into [{name, goal}]. Pure."""
+    obj = _extract_json_object(text) or {}
+    parts = obj.get("parts")
+    out: list[dict] = []
+    seen: set[str] = set()
+    if isinstance(parts, list):
+        for p in parts:
+            if not isinstance(p, dict):
+                continue
+            name = _coerce_str(p.get("name"))
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            out.append({"name": name[:40],
+                        "goal": (_coerce_str(p.get("goal")) or name)[:300]})
+    return out[:6]
+
+
 # --- the live Replicate-backed driver ---
 
 class ReplicateDriver:
@@ -276,6 +314,9 @@ class ReplicateDriver:
 
     def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
         return parse_refute_verdict(self._run_model(screenshot, build_refute_prompt(finding)))
+
+    def plan(self, som: bytes, elements, goal: str) -> list[dict]:
+        return parse_plan(self._run_model(som, build_plan_prompt(elements, goal)))
 
     def _run_model(self, image_bytes: bytes, prompt: str) -> str:
         import replicate  # lazy
@@ -349,6 +390,14 @@ class HeuristicDriver:
         # no brain to refute → keep the finding as-is (don't silently drop evidence).
         return {"confirmed": True, "reason": "heuristic mode — not verified"}
 
+    def plan(self, som: bytes, elements, goal: str) -> list[dict]:
+        # no brain → one part per nav-ish element (links/tabs), else the whole app.
+        parts = [{"name": (e.label or "").strip()[:40], "goal": f"test {e.label!r}"}
+                 for e in elements
+                 if getattr(e, "interactivity", False) and (e.role or "") in ("link", "tab")
+                 and (e.label or "").strip()]
+        return parts[:6] or [{"name": "app", "goal": goal}]
+
 
 def _is_degenerate(d: Decision) -> bool:
     """A primary decision that can't actually do anything → fall back to heuristic.
@@ -398,6 +447,9 @@ class FallbackDriver:
     def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
         return self.primary.verify_finding(finding, screenshot)
 
+    def plan(self, som: bytes, elements, goal: str) -> list[dict]:
+        return self.primary.plan(som, elements, goal)
+
 
 class AnthropicDriver:
     """SoM-grounded Claude driver — the high-quality brain.
@@ -427,6 +479,9 @@ class AnthropicDriver:
 
     def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
         return parse_refute_verdict(self._run_model(screenshot, build_refute_prompt(finding)))
+
+    def plan(self, som: bytes, elements, goal: str) -> list[dict]:
+        return parse_plan(self._run_model(som, build_plan_prompt(elements, goal)))
 
     def _run_model(self, image_bytes: bytes, prompt: str) -> str:
         import base64

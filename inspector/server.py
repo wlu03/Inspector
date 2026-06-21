@@ -790,6 +790,37 @@ async def test_app(
     return result
 
 
+@mcp.tool(annotations=DESTRUCTIVE)
+async def test_app_parallel(
+    repo_path: str,
+    goal: str = "find bugs",
+    surface: str | None = None,
+    max_agents: int = 4,
+    max_steps: int = 5,
+    ctx: Context = None,
+) -> dict:
+    """PLAN → DISPATCH → MERGE: a planner maps the app into parts, then a headless agent
+    per part traverses it IN PARALLEL to find bugs, and the findings are merged.
+
+    One scout session looks at the app and decomposes it into its distinct screens/
+    features/flows; up to `max_agents` autonomous agents then test those parts at once
+    (each its own app instance), so a many-screen app is covered concurrently instead of
+    one long serial crawl. Returns the plan, per-agent results, and the merged bug list.
+    """
+    from .parallel import planned_verify
+
+    surf = Surface(surface) if surface else None
+    await _say(ctx, f"Planning {repo_path} → fanning out up to {max_agents} agents…", 5)
+    result = await _run_with_heartbeat(
+        ctx, "Planning + parallel testing",
+        lambda: planned_verify(CONFIG, repo_path, surf, goal, max_steps, max_agents),
+    )
+    result.update(_dashboard_links())
+    await _say(ctx, f"{result.get('total_unique_findings', 0)} unique findings across "
+                    f"{result.get('agents', 0)} agents", 100)
+    return result
+
+
 def _test_feature_sync(repo_path, feature, surface, dev_command, alias, max_regions) -> dict:
     """Cartographer body: region-decomposed deterministic lens sweep (docs/15)."""
     from .autopilot import collect_findings
