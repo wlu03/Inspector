@@ -8,6 +8,7 @@ struct ProfileView: View {
     @State private var displayName = ""
     @State private var email = ""
     @State private var didContinue = false
+    @State private var validationError = ""
 
     // BUG-04: this is meant to mirror app.settingsName, but it is a private
     // snapshot that is never assigned, so the summary is always blank/stale.
@@ -31,6 +32,14 @@ struct ProfileView: View {
                     .accessibilityIdentifier("profile.continue.button")
             }
 
+            if !validationError.isEmpty {
+                Section("Error") {
+                    Text(validationError)
+                        .foregroundColor(.red)
+                        .accessibilityIdentifier("profile.validationError")
+                }
+            }
+
             if didContinue {
                 Section("Result") {
                     Text("Continued as \(displayName.isEmpty ? "(empty)" : displayName)")
@@ -48,10 +57,13 @@ struct ProfileView: View {
     private func submit() {
         let isValid = !displayName.isEmpty && email.contains("@")
         if !isValid {
-            // BUG-03: invalid input is logged but accepted anyway.
-            NSLog("validation skipped on submit")
+            var errors: [String] = []
+            if displayName.isEmpty { errors.append("Display name is required.") }
+            if !email.contains("@") { errors.append("Email must contain '@'.") }
+            validationError = errors.joined(separator: " ")
+            return
         }
-        // Proceeds regardless of validity.
+        validationError = ""
         app.profileDisplayName = displayName
         app.profileEmail = email
         didContinue = true
