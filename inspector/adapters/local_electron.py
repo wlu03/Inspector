@@ -54,8 +54,12 @@ class LocalElectronAdapter(SurfaceAdapter):
         cmd = dev_command or self.project.dev_command
         # --remote-allow-origins=* : modern Chromium rejects CDP WS connections from a
         # non-allowlisted Origin with a 403, which silently fails is_ready otherwise.
+        # the --disable-*backgrounding/throttling flags keep the renderer PAINTING even
+        # when the window is hidden (headless) — else captureScreenshot returns empty.
         full = (f"{cmd} -- --remote-debugging-port={self._cdp_port} "
-                f"--remote-allow-origins=* --no-sandbox")
+                f"--remote-allow-origins=* --no-sandbox "
+                f"--disable-backgrounding-occluded-windows --disable-renderer-backgrounding "
+                f"--disable-background-timer-throttling")
         # start_new_session so teardown can kill the whole electron process group
         self._proc = subprocess.Popen(
             shlex.split(full), cwd=repo_path, start_new_session=True,
@@ -71,7 +75,8 @@ class LocalElectronAdapter(SurfaceAdapter):
                     self.cdp = CDPClient(ws_url)
                     self.cdp.enable()
                     self._refresh_viewport()
-                    time.sleep(0.5)  # let the renderer paint
+                    self._hide_window()      # headless: no window on screen
+                    time.sleep(0.5)          # let the renderer paint
                     return True
                 except Exception as exc:  # don't fail silently — surface why
                     logging.getLogger("inspector").warning("CDP connect failed: %s", exc)
@@ -91,6 +96,22 @@ class LocalElectronAdapter(SurfaceAdapter):
         except Exception:
             return None
         return None
+
+    def _hide_window(self) -> None:
+        """macOS has no headless Electron, but we can HIDE the app's windows (Cmd-H) so
+        nothing shows on screen — CDP captureScreenshot still works (it grabs the renderer
+        compositor, not the OS window). Set INSPECTOR_SHOW_ELECTRON=1 to watch instead."""
+        if os.environ.get("INSPECTOR_SHOW_ELECTRON") == "1":
+            return
+        try:
+            subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to set visible of '
+                 '(every process whose name contains "Electron") to false'],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
 
     def _refresh_viewport(self) -> None:
         v = self.cdp.evaluate("JSON.stringify([window.innerWidth, window.innerHeight])")
