@@ -72,6 +72,19 @@ struct WishlistView: View {
                     .accessibilityIdentifier("settings.theme.current")
             }
 
+            Section("More") {
+                // BUG-07 (simple/crash): out-of-bounds index — tapping fatal-crashes the app.
+                Button("Surprise me") {
+                    let pick = app.items[app.items.count]   // index out of range → crash
+                    app.newItemName = pick.name
+                }
+                .accessibilityIdentifier("home.surprise.button")
+
+                // BUG-08 (simple/dead control): no action — tapping does nothing.
+                Button("Share wishlist") { }
+                    .accessibilityIdentifier("home.share.button")
+            }
+
             Section {
                 NavigationLink("Wish Details", value: Route.details)
                 NavigationLink("About", value: Route.about)

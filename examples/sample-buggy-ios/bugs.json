@@ -3,8 +3,12 @@
   "surface": "ios",
   "framework": "SwiftUI",
   "bundle_id": "com.inspector.SampleBuggyApp",
-  "screens": ["Settings", "Profile", "About"],
-  "notes": "v2 — hard-to-surface UI bugs. NONE emit a log; each is a subtle UI-STATE defect that only appears after a specific multi-step sequence and is detectable only by reading the accessibility tree (a Text's content is its AXLabel; a TextField's typed contents are its AXValue). Scored by the post-sequence a11y oracle (scripts/verify_ios_bugs.py) and/or semantic finding-match — there is no greppable log_signature.",
+  "screens": [
+    "Settings",
+    "Profile",
+    "About"
+  ],
+  "notes": "v2 \u2014 hard-to-surface UI bugs. NONE emit a log; each is a subtle UI-STATE defect that only appears after a specific multi-step sequence and is detectable only by reading the accessibility tree (a Text's content is its AXLabel; a TextField's typed contents are its AXValue). Scored by the post-sequence a11y oracle (scripts/verify_ios_bugs.py) and/or semantic finding-match \u2014 there is no greppable log_signature. BUG-07/08 are SIMPLE (easy) bugs the general autopilot surfaces fast (a crash + a dead button), alongside the 6 hard a11y-state bugs.",
   "scoring": "semantic",
   "bugs": [
     {
@@ -16,7 +20,7 @@
       "log_signature": null,
       "crash_signature": null,
       "title": "Committed profile edits lost on re-entry; saved-summary contradicts the empty field",
-      "description": "Profile's editable fields are fresh view-local @State never seeded back from the model (the .onAppear read-back is missing). After Continue commits a name, re-entering Profile shows the model-backed 'Saved profile' row with the name, but the Display name field is blank — a same-screen contradiction.",
+      "description": "Profile's editable fields are fresh view-local @State never seeded back from the model (the .onAppear read-back is missing). After Continue commits a name, re-entering Profile shows the model-backed 'Saved profile' row with the name, but the Display name field is blank \u2014 a same-screen contradiction.",
       "trigger": [
         "On Profile, type 'Wesley' into Display name and 'w@x.com' into Email",
         "Tap Continue (navigates to About)",
@@ -24,7 +28,7 @@
         "Read the 'Saved profile' row AND the Display name field"
       ],
       "expected": "On re-entry the Display name field is re-seeded from the model and reads 'Wesley', matching the saved summary.",
-      "actual": "The 'Saved profile' row reads 'Wesley' but the Display name field is empty — the committed edit appears lost.",
+      "actual": "The 'Saved profile' row reads 'Wesley' but the Display name field is empty \u2014 the committed edit appears lost.",
       "observable_ui_diff": "profile.savedName AXLabel=='Wesley' while the Display name TextField AXValue is empty.",
       "oracle": "PRESENT iff a node AXLabel=='Wesley' exists AND the Display name field AXValue is empty; FIXED iff both are 'Wesley'.",
       "expected_finding": "Reports the Profile display-name field went blank after navigating away and back, although a saved name is still shown."
@@ -45,7 +49,7 @@
         "Re-read the 'Your name' field value and the 'Saved' confirmation"
       ],
       "expected": "The name persists verbatim ('007') and 'Saved' appears.",
-      "actual": "The field silently becomes '7' while 'Saved' still appears — success is reported but the value changed.",
+      "actual": "The field silently becomes '7' while 'Saved' still appears \u2014 success is reported but the value changed.",
       "observable_ui_diff": "settings.name.field AXValue becomes '7' (not '007') after Save while settings.savedConfirmation reads 'Saved'.",
       "oracle": "PRESENT iff after typing '007' and Save the field AXValue=='7' AND a 'Saved' confirmation shows; FIXED iff AXValue=='007'.",
       "expected_finding": "Reports saving a value like '007' silently changes it (leading zeros dropped) though it claims success."
@@ -59,14 +63,14 @@
       "log_signature": null,
       "crash_signature": null,
       "title": "Character counter is off-by-one (boundary-safe: correct when empty, wrong once you type)",
-      "description": "The 'Your name' counter renders max(0, count-1)/30, so the empty field shows a correct-looking '0/30' but every non-empty value is undercounted by one — 'Alice' (5) shows '4/30'.",
+      "description": "The 'Your name' counter renders max(0, count-1)/30, so the empty field shows a correct-looking '0/30' but every non-empty value is undercounted by one \u2014 'Alice' (5) shows '4/30'.",
       "trigger": [
         "On Settings, observe the counter reads '0/30' on the empty field",
         "Type exactly 'Alice' (5 chars) into 'Your name'",
         "Read the counter and compare to the typed length"
       ],
       "expected": "The counter shows '5/30' for a 5-character name.",
-      "actual": "The counter shows '4/30' — undercounts by one.",
+      "actual": "The counter shows '4/30' \u2014 undercounts by one.",
       "observable_ui_diff": "settings.name.counter AXLabel=='4/30' after typing 'Alice' (should be '5/30').",
       "oracle": "PRESENT iff after typing an N-char value the counter leading int == N-1; FIXED iff == N.",
       "expected_finding": "Reports the character counter is off by one / undercounts the typed length."
@@ -106,7 +110,7 @@
         "Tap Back twice and read the navigation title"
       ],
       "expected": "Two Backs from About reach the Settings root (no Back button).",
-      "actual": "After two Backs the title is still 'Profile' with a Back button present — the stack is one too deep.",
+      "actual": "After two Backs the title is still 'Profile' with a Back button present \u2014 the stack is one too deep.",
       "observable_ui_diff": "After two Backs the navigation-title is 'Profile' with a Back button; correct is 'Settings' with none.",
       "oracle": "PRESENT iff two Backs from About leave nav-title=='Profile' AND a Back button present; FIXED iff title=='Settings'.",
       "expected_finding": "Reports back navigation is broken / lands on a duplicate or blank Profile and does not return to root as expected."
@@ -130,7 +134,41 @@
       "actual": "'Current theme:' reads 'Light' (the previous selection) while 'Dark' is highlighted.",
       "observable_ui_diff": "settings.theme.current reads 'Current theme: Light' while the segmented control highlights 'Dark'.",
       "oracle": "PRESENT iff after tapping Light then Dark the current-theme caption reads 'Light' (!= highlighted 'Dark'); FIXED iff 'Dark'.",
-      "expected_finding": "Reports the theme control applies the wrong/previous option — highlight and applied theme disagree."
+      "expected_finding": "Reports the theme control applies the wrong/previous option \u2014 highlight and applied theme disagree."
+    },
+    {
+      "id": "BUG-07",
+      "screen": "My Wishlist",
+      "type": "crash",
+      "severity": "high",
+      "difficulty": "easy",
+      "log_signature": "Index out of range",
+      "crash_signature": "Fatal error: Index out of range",
+      "title": "'Surprise me' crashes the app (array index out of bounds)",
+      "trigger": [
+        "On My Wishlist, tap 'Surprise me'"
+      ],
+      "expected": "Picks a random existing wish.",
+      "actual": "App crashes \u2014 indexes items[count] (one past the end).",
+      "oracle": "crash/log tap + the app dies",
+      "expected_finding": "Reports the app crashed when tapping 'Surprise me'."
+    },
+    {
+      "id": "BUG-08",
+      "screen": "My Wishlist",
+      "type": "dead-control",
+      "severity": "medium",
+      "difficulty": "easy",
+      "log_signature": null,
+      "crash_signature": null,
+      "title": "'Share wishlist' button does nothing (no handler)",
+      "trigger": [
+        "On My Wishlist, tap 'Share wishlist'"
+      ],
+      "expected": "Opens a share sheet / shares the wishlist.",
+      "actual": "Nothing happens \u2014 the button has an empty action.",
+      "oracle": "verify-after-act (changed:false)",
+      "expected_finding": "Reports the 'Share wishlist' button is unresponsive."
     }
   ]
 }
