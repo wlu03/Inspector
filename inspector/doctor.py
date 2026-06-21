@@ -31,6 +31,17 @@ def main() -> int:
             detail = (str(exc).splitlines() or ["missing"])[0]
             required_ok &= _check(f"import {mod}", False, detail)
 
+    print("\nSurface toolchains (optional — only needed for that surface):")
+    import shutil
+    _check("node (web/electron)", bool(shutil.which("node")))
+    _check("adb + emulator (android)",
+           bool(shutil.which("adb")) and bool(shutil.which("emulator")))
+    idb = (cfg.ios_idb_bin if (cfg.ios_idb_bin and "/" in cfg.ios_idb_bin)
+           else shutil.which(cfg.ios_idb_bin or "idb"))
+    ios_ok = bool(shutil.which("xcrun")) and bool(idb) and bool(shutil.which("idb_companion"))
+    _check("xcrun + idb + idb_companion (ios)", ios_ok,
+           "" if ios_ok else f"INSPECTOR_IDB_BIN={cfg.ios_idb_bin}")
+
     print()
     if required_ok:
         print("All required checks passed. Run the server with: python -m inspector.server")
