@@ -287,8 +287,10 @@ async def launch_app(
     await _say(ctx, "Booting sandbox — cold boot can take 30–120s (deps + browser + dev server)…", 5)
     try:
         ready = await _run_with_heartbeat(ctx, "Launching", lambda: session.launch(dev_command))
-    except Exception as exc:
-        MANAGER.stop(sid)  # kill the sandbox, drop the session
+    except BaseException as exc:
+        MANAGER.stop(sid)  # always release the billed sandbox, even on cancellation
+        if not isinstance(exc, Exception):
+            raise  # propagate cancellation/interrupt AFTER tearing the sandbox down
         await _say(ctx, f"launch failed: {str(exc)[:120]}")
         return {
             "session_id": sid, "alias": session.record.alias,
