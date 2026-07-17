@@ -33,3 +33,12 @@ follow [Semantic Versioning](https://semver.org/).
 - `inspector-mcp` CLI (`serve` + `doctor`); import-safe `mcp_server.py` (so
   `fastmcp inspect` works); MCP Registry `server.json`.
 - pyproject metadata: authors, urls, keywords, classifiers; `INSPECTOR_ENV_FILE`.
+
+### Security
+- Validate `session_id` before joining it to the trace root (read + write paths),
+  closing a traversal in the run/finding tools and the dashboard action handler.
+- Canonicalize `repo_path`; optional `INSPECTOR_WORKSPACE_ROOTS` allowlist.
+- Refuse host/local execution over the HTTP transport unless
+  `INSPECTOR_ALLOW_UNSAFE_LOCAL=1` (was remote host code execution).
+- Release the billed sandbox on client cancellation (previously leaked to the reaper).
+- CSRF / DNS-rebinding guard on the dashboard `POST /api/*` endpoints.
