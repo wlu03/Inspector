@@ -1060,7 +1060,7 @@ def main() -> None:
 
         python -m inspector.server                 # stdio
         python -m inspector.server --http          # http://127.0.0.1:8765/mcp
-        python -m inspector.server --http --host 0.0.0.0 --port 8765
+        python -m inspector.server --http --port 8765   # loopback only (no auth yet)
     """
     import argparse
 
@@ -1081,6 +1081,15 @@ def main() -> None:
     host = args.host or CONFIG.http_host
     port = args.port or CONFIG.http_port
     path = args.path or CONFIG.http_path
+    # Security triage: Inspector has no HTTP auth yet, so a non-loopback bind would
+    # expose full tool access (sandbox spawn, dev_command, arbitrary repo reads) to
+    # the network. Refuse it until authentication lands (roadmap Phase 2B).
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        raise SystemExit(
+            f"Refusing to bind {transport} on non-loopback host {host!r} without "
+            "authentication. Bind 127.0.0.1 and front it with an authenticated "
+            "tunnel/proxy, or set INSPECTOR_HTTP_HOST=127.0.0.1."
+        )
     log.info("Inspector MCP on %s http://%s:%s%s", transport, host, port, path)
     mcp.run(transport=transport, host=host, port=port, path=path)
 

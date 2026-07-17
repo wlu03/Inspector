@@ -6,15 +6,16 @@ How to do tasks **#6** (validate the real agent loop in Claude Code) and **#7**
 ## Prereqs (once)
 
 ```bash
-cd /Users/wesleylu/Projects/Research/LoopBack
+cd /path/to/Inspector
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[all]"
 cp .env.example .env            # add E2B_API_KEY + REPLICATE_API_TOKEN
 python -m inspector.doctor       # confirm both keys + SDKs OK
 ```
 
-The MCP server loads `.env` from next to the package, so it works no matter
-which directory Claude Code launches it from.
+The MCP server loads `.env` from the current directory or the project root.
+(An editable install also reads the `.env` next to the package; a pip-installed
+package does not — pass keys via your MCP client's env config instead.)
 
 ---
 
@@ -28,7 +29,7 @@ already knows the answer.
 
 ```bash
 claude mcp add --transport stdio --scope user inspector \
-  -- /Users/wesleylu/Projects/Research/LoopBack/.venv/bin/inspector
+  -- /path/to/Inspector/.venv/bin/inspector
 ```
 
 (Or, if you open Claude Code with this folder as the project root, the included
@@ -41,7 +42,7 @@ confirm with `/mcp` — you should see `inspector` with tools
 In a Claude Code session, paste:
 
 > Use the **inspector** MCP tools to test the app at
-> `/Users/wesleylu/Projects/Research/LoopBack/examples/sample-buggy-app`.
+> `/path/to/Inspector/examples/sample-buggy-app`.
 > Steps: call `launch_app` on it; call `observe` and look at the numbered
 > screenshot; identify and `act`-click the **Save** button; then `observe`/`verify`
 > to check whether a "Saved" confirmation appears. If it doesn't, read the app

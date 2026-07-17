@@ -6,13 +6,12 @@
     # examples
     python scripts/demo_planner.py examples/sample-buggy-electron electron
     python scripts/demo_planner.py examples/sample-buggy-app web 4 5
-    python scripts/demo_planner.py ~/code/super-productivity electron
+    python scripts/demo_planner.py ~/code/your-electron-app electron
 
 The planner looks at the app's first screen, decomposes it into parts, and dispatches
 one headless agent per part in parallel — then prints the plan + merged findings.
 Needs the keys in .env; for Electron/web, `node` must be on PATH.
 """
-import json
 import sys
 import time
 

@@ -43,8 +43,7 @@ def _load_dotenv() -> None:
 def _env(*names: str, default: str | None = None) -> str | None:
     """First set environment variable among ``names``.
 
-    INSPECTOR_* names are canonical; LOOPBACK_* are accepted as a legacy fallback
-    (the product was renamed LoopBack -> Inspector). Pass the new name(s) first.
+    Returns the first of ``names`` set in the environment, else ``default``.
     """
     for name in names:
         value = os.getenv(name)
@@ -156,8 +155,8 @@ class Config:
     devin_poll_timeout_s: int = 600  # cap waiting on Devin at 10 minutes
     # Pin the GitHub repo Devin clones/opens PRs against ('owner/name'). Without this,
     # the target is auto-derived from the app-under-test's git remote, which can point
-    # at an upstream/fork. Force every Devin push to our own repo instead.
-    devin_repo: str | None = "wlu03/LoopBack"
+    # at an upstream/fork. Set INSPECTOR_DEVIN_REPO to force a specific target.
+    devin_repo: str | None = None
 
     # MCP transport. "stdio" (default, for Claude Code/Cursor) or "http"/"sse" so a
     # REMOTE client (e.g. Devin, via its MCP marketplace) can reach Inspector over the
@@ -174,41 +173,41 @@ class Config:
             e2b_api_key=os.getenv("E2B_API_KEY"),
             replicate_api_token=os.getenv("REPLICATE_API_TOKEN"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            detector_backend=_env("INSPECTOR_DETECTOR", "LOOPBACK_DETECTOR", default="replicate") or "replicate",
-            omniparser_endpoint=_env("INSPECTOR_OMNIPARSER_URL", "LOOPBACK_OMNIPARSER_URL"),
-            omniparser_ref=_env("INSPECTOR_OMNIPARSER_REF", "LOOPBACK_OMNIPARSER_REF", default=DEFAULT_OMNIPARSER_REF) or DEFAULT_OMNIPARSER_REF,
-            driver_backend=_env("INSPECTOR_DRIVER", "LOOPBACK_DRIVER", default="auto") or "auto",
-            driver_model=_env("INSPECTOR_DRIVER_MODEL", "LOOPBACK_DRIVER_MODEL",
+            detector_backend=_env("INSPECTOR_DETECTOR", default="replicate") or "replicate",
+            omniparser_endpoint=_env("INSPECTOR_OMNIPARSER_URL"),
+            omniparser_ref=_env("INSPECTOR_OMNIPARSER_REF", default=DEFAULT_OMNIPARSER_REF) or DEFAULT_OMNIPARSER_REF,
+            driver_backend=_env("INSPECTOR_DRIVER", default="auto") or "auto",
+            driver_model=_env("INSPECTOR_DRIVER_MODEL",
                               default="claude-sonnet-4-6") or "claude-sonnet-4-6",
-            macos_host=_env("INSPECTOR_MACOS_HOST", "LOOPBACK_MACOS_HOST"),
-            macos_user=_env("INSPECTOR_MACOS_USER", "LOOPBACK_MACOS_USER", default="admin") or "admin",
-            macos_ssh_key=_env("INSPECTOR_MACOS_SSH_KEY", "LOOPBACK_MACOS_SSH_KEY"),
-            macos_base_image=_env("INSPECTOR_MACOS_IMAGE", "LOOPBACK_MACOS_IMAGE",
+            macos_host=_env("INSPECTOR_MACOS_HOST"),
+            macos_user=_env("INSPECTOR_MACOS_USER", default="admin") or "admin",
+            macos_ssh_key=_env("INSPECTOR_MACOS_SSH_KEY"),
+            macos_base_image=_env("INSPECTOR_MACOS_IMAGE",
                                   default="ghcr.io/cirruslabs/macos-sequoia-xcode:latest")
             or "ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
-            macos_ios_udid=_env("INSPECTOR_IOS_UDID", "LOOPBACK_IOS_UDID"),
-            ios_idb_bin=_env("INSPECTOR_IDB_BIN", "LOOPBACK_IDB_BIN", default="idb") or "idb",
-            macos_app=_env("INSPECTOR_MACOS_APP", "LOOPBACK_MACOS_APP"),
-            flutter_bin=_env("INSPECTOR_FLUTTER_BIN", "LOOPBACK_FLUTTER_BIN", default="flutter") or "flutter",
-            execution=_env("INSPECTOR_EXECUTION", "LOOPBACK_EXECUTION", default="local") or "local",
+            macos_ios_udid=_env("INSPECTOR_IOS_UDID"),
+            ios_idb_bin=_env("INSPECTOR_IDB_BIN", default="idb") or "idb",
+            macos_app=_env("INSPECTOR_MACOS_APP"),
+            flutter_bin=_env("INSPECTOR_FLUTTER_BIN", default="flutter") or "flutter",
+            execution=_env("INSPECTOR_EXECUTION", default="local") or "local",
             android_package=_env("INSPECTOR_ANDROID_PACKAGE"),
             android_activity=_env("INSPECTOR_ANDROID_ACTIVITY"),
             android_serial=_env("INSPECTOR_ANDROID_SERIAL"),
             android_avd=_env("INSPECTOR_ANDROID_AVD"),
             android_runtime=_env("INSPECTOR_ANDROID_RUNTIME", default="local") or "local",
-            driver_ref=_env("INSPECTOR_DRIVER_REF", "LOOPBACK_DRIVER_REF", default=DEFAULT_DRIVER_REF) or DEFAULT_DRIVER_REF,
+            driver_ref=_env("INSPECTOR_DRIVER_REF", default=DEFAULT_DRIVER_REF) or DEFAULT_DRIVER_REF,
             sandbox_template=_env("INSPECTOR_E2B_TEMPLATE", "E2B_TEMPLATE"),
-            session_idle_ttl_s=int(_env("INSPECTOR_SESSION_IDLE_TTL", "LOOPBACK_SESSION_IDLE_TTL", default="600") or "600"),
-            reaper_interval_s=int(_env("INSPECTOR_REAPER_INTERVAL", "LOOPBACK_REAPER_INTERVAL", default="60") or "60"),
-            max_images_per_session=int(_env("INSPECTOR_MAX_IMAGES", "LOOPBACK_MAX_IMAGES", default="0") or "0"),
-            dashboard_port=int(_env("INSPECTOR_DASHBOARD_PORT", "LOOPBACK_DASHBOARD_PORT", default="7321") or "7321"),
-            heartbeat_screenshot_s=float(_env("INSPECTOR_HEARTBEAT_S", "LOOPBACK_HEARTBEAT_S", default="5") or "5"),
-            notify=(_env("INSPECTOR_NOTIFY", "LOOPBACK_NOTIFY", default="1") or "1") not in ("0", "false", "no", ""),
+            session_idle_ttl_s=int(_env("INSPECTOR_SESSION_IDLE_TTL", default="600") or "600"),
+            reaper_interval_s=int(_env("INSPECTOR_REAPER_INTERVAL", default="60") or "60"),
+            max_images_per_session=int(_env("INSPECTOR_MAX_IMAGES", default="0") or "0"),
+            dashboard_port=int(_env("INSPECTOR_DASHBOARD_PORT", default="7321") or "7321"),
+            heartbeat_screenshot_s=float(_env("INSPECTOR_HEARTBEAT_S", default="5") or "5"),
+            notify=(_env("INSPECTOR_NOTIFY", default="1") or "1") not in ("0", "false", "no", ""),
             devin_api_key=os.getenv("DEVIN_API_KEY"),
             devin_base_url=_env("INSPECTOR_DEVIN_URL", default="https://api.devin.ai") or "https://api.devin.ai",
             devin_max_acu=int(_env("INSPECTOR_DEVIN_MAX_ACU") or "0") or None,
             devin_poll_timeout_s=int(_env("INSPECTOR_DEVIN_TIMEOUT", default="600") or "600"),
-            devin_repo=_env("INSPECTOR_DEVIN_REPO", "LOOPBACK_DEVIN_REPO", default="wlu03/LoopBack") or "wlu03/LoopBack",
+            devin_repo=_env("INSPECTOR_DEVIN_REPO"),
             transport=_env("INSPECTOR_TRANSPORT", default="stdio") or "stdio",
             http_host=_env("INSPECTOR_HTTP_HOST", default="127.0.0.1") or "127.0.0.1",
             http_port=int(_env("INSPECTOR_HTTP_PORT", default="8765") or "8765"),

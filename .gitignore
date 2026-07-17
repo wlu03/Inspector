@@ -24,3 +24,6 @@ DerivedData/
 examples/sample-buggy-ios/Sources/Info.plist
 # Redroid volume
 infra/android-redroid/data/
+
+# Fetched benchmark demo apps (see benchmarks/manifests/) - never re-vendor
+.demo-apps/

@@ -2,6 +2,9 @@
 name = "inspector"
 version = "0.0.1"
 description = "An MCP server that lets a coding agent see, operate, and test the app it built — across web, Electron, Android, and iOS — via pure computer-use."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
   "fastmcp>=2.0",
