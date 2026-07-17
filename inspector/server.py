@@ -74,7 +74,11 @@ def _apply_profile() -> None:
         return
     for _name in ADVANCED_TOOLS:
         try:
-            mcp.remove_tool(_name)
+            _provider = getattr(mcp, "local_provider", None)
+            if _provider is not None and hasattr(_provider, "remove_tool"):
+                _provider.remove_tool(_name)
+            else:
+                mcp.remove_tool(_name)
         except Exception:
             pass
 
