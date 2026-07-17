@@ -20,7 +20,7 @@ scp -o StrictHostKeyChecking=no provision-vm.sh admin@<vm-ip>:/tmp/
 ssh admin@<vm-ip> 'bash /tmp/provision-vm.sh'
 
 # 3. Set the env var and run the demo
-export LOOPBACK_MACOS_HOST=<vm-ip>
+export INSPECTOR_MACOS_HOST=<vm-ip>
 python scripts/demo_ios.py
 ```
 

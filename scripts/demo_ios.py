@@ -3,7 +3,7 @@
 
 Usage:
   # With a running tart VM:
-  LOOPBACK_MACOS_HOST=<vm-ip> python scripts/demo_ios.py
+  INSPECTOR_MACOS_HOST=<vm-ip> python scripts/demo_ios.py
 
   # Or let the adapter boot tart automatically:
   python scripts/demo_ios.py
@@ -34,11 +34,11 @@ from inspector.models import ActionType
 def main():
     print("=== Inspector iOS Demo ===\n")
 
-    host = os.getenv("LOOPBACK_MACOS_HOST")
+    host = os.getenv("INSPECTOR_MACOS_HOST")
     if host:
         print(f"Using macOS host: {host}")
     else:
-        print("No LOOPBACK_MACOS_HOST set — will try to boot tart VM automatically.")
+        print("No INSPECTOR_MACOS_HOST set — will try to boot tart VM automatically.")
 
     config = Config.from_env()
     adapter = IOSAdapter(config)

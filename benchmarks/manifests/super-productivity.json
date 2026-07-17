@@ -1,0 +1,10 @@
+{
+  "name": "super-productivity",
+  "description": "Third-party demo app used by scripts/demo_*.py. Not vendored in this repo — fetch on demand.",
+  "upstream": "https://github.com/super-productivity/super-productivity.git",
+  "pinned_version": "v18.12.0",
+  "license": "MIT",
+  "android_package": "com.superproductivity.superproductivity",
+  "apk_path": "android/app/build/outputs/apk/play/debug/app-play-debug.apk",
+  "note": "Was previously vendored at demo-apps/super-productivity (~51 MB); removed to shrink the repo. Fetch with benchmarks/manifests/fetch-demo-app.sh."
+}

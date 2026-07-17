@@ -1,4 +1,4 @@
-# `cartographer-and-native-surfaces` branch contains the final code
+# Inspector
 
 **An MCP server that lets a coding agent see, operate, and test the app it just built — across web, Electron, Android, and iOS — and feed structured, reproducible findings back so it can fix issues autonomously.**
 
@@ -100,7 +100,7 @@ Inspector keeps computer-use's **universality** and Playwright's **deterministic
 
 ## Status
 
-**Building.** Web surface is end-to-end live-proven; pure-Python core, 13+ MCP tools, deterministic `audit_dom`, adversarial planning, and findings/replay are wired (100+ unit tests). Electron is one refactor out; Android/iOS adapters are interface skeletons. See [BUILD_PLAN.md](BUILD_PLAN.md) for the authoritative status.
+**Building.** Web surface is end-to-end live-proven; pure-Python core, 13+ MCP tools, deterministic `audit_dom`, adversarial planning, and findings/replay are wired (100+ unit tests). Electron is one refactor out; Android/iOS adapters are further along than the earliest scaffolds. See [docs/08 - Build Plan](docs/08-roadmap.md).
 
 **Scope (decided):** build **all four surfaces** (Web, Electron, Android, iOS) as a **personal/dev tool** — not productionizing yet (no hosting, payments, or hosted dashboard). Signups + build checklist for this scope: [12 — Accounts & Services](docs/12-accounts-and-services.md). Bring runtimes online web → Electron → Android → iOS (infra-readiness order; all four in scope).
 
@@ -149,9 +149,8 @@ infra/               # how each VM is provisioned (linux-e2b, android-redroid, m
 examples/            # one buggy sample app per surface (web, electron, android, ios)
 docs/                # 01–12 design docs
 scripts/             # run_m0 / run_m0_mcp / run_app / doctor / probes
-DELIVERABLES.md      # the full build checklist  ·  TESTING.md  # how to validate with a real agent
+TESTING.md           # how to validate with a real Claude Code agent
 ```
 
-- **[DELIVERABLES.md](DELIVERABLES.md)** — the complete what's-needed checklist (multimodal).
 - **[TESTING.md](TESTING.md)** — how to run tasks #6/#7 (validate with a real Claude Code agent).
 - **[infra/](infra/)** — the two VM planes (Linux for web/Electron/Android, macOS for iOS).

@@ -5,10 +5,12 @@ per emulator against the same app — the "all emulators popping" demo.
     INSPECTOR_SHOW_EMULATOR=1 \
       python scripts/demo_android_fleet.py [repo] [apk] [package] [N] [steps]
 
-Defaults to Super Productivity's prebuilt APK. Each agent gets its OWN emulator
-(unique even port, -read-only ephemeral data) + installs the APK + drives a session.
+Pass the app repo dir (or set DEMO_APP_DIR) - Super Productivity is no longer vendored;
+fetch it via benchmarks/manifests/. Each agent gets its OWN emulator (unique even port,
+-read-only ephemeral data) + installs the APK + drives a session.
 """
 import dataclasses
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -20,7 +22,13 @@ from inspector.models import Surface
 from inspector.planes.android import LocalEmulatorRuntime, _sdk_bin
 from inspector.session import SessionManager
 
-repo = sys.argv[1] if len(sys.argv) > 1 else "demo-apps/super-productivity"
+repo = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("DEMO_APP_DIR")
+if not repo:
+    sys.exit(
+        "Pass the demo app repo dir as the first arg, or set DEMO_APP_DIR. "
+        "Super Productivity is no longer vendored - fetch it with:\n"
+        "  bash benchmarks/manifests/fetch-demo-app.sh"
+    )
 apk = sys.argv[2] if len(sys.argv) > 2 else \
     f"{repo}/android/app/build/outputs/apk/play/debug/app-play-debug.apk"
 pkg = sys.argv[3] if len(sys.argv) > 3 else "com.superproductivity.superproductivity"

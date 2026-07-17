@@ -82,7 +82,7 @@ Or manually:
   brew install idb-companion && pip3 install fb-idb
 
 Then set in your .env:
-  LOOPBACK_MACOS_HOST=$IP
+  INSPECTOR_MACOS_HOST=$IP
 
 To stop the VM later:
   tart stop $VM
