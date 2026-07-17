@@ -181,6 +181,10 @@ class Config:
     # Security: if set, repo_path must resolve under one of these workspace roots
     # (else any host path is allowed, just canonicalized to an absolute realpath).
     workspace_roots: list[str] = field(default_factory=list)
+    # Permit host (non-sandboxed) execution over the HTTP transport. Off by default:
+    # for a networked client, host execution (dev_command + local adapters) is arbitrary
+    # code execution on this machine. The local stdio client is always allowed.
+    allow_unsafe_local: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -229,4 +233,6 @@ class Config:
             http_port=int(_env("INSPECTOR_HTTP_PORT", default="8765") or "8765"),
             http_path=_env("INSPECTOR_HTTP_PATH", default="/mcp") or "/mcp",
             workspace_roots=_split_paths(_env("INSPECTOR_WORKSPACE_ROOTS")),
+            allow_unsafe_local=(_env("INSPECTOR_ALLOW_UNSAFE_LOCAL", default="0") or "0")
+            not in ("0", "false", "no", ""),
         )
