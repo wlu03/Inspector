@@ -52,6 +52,19 @@ def test_server_exposes_usage_instructions():
     assert "launch_app" in text and "observe" in text and "act" in text and "stop" in text
 
 
+def test_profiles_partition_the_tool_registry():
+    both = server.CORE_TOOLS | server.ADVANCED_TOOLS
+    assert not (server.CORE_TOOLS & server.ADVANCED_TOOLS)
+    assert len(server.CORE_TOOLS) == 10 and len(both) == 25
+    for name in both:  # every classified tool is actually registered
+        assert asyncio.run(server.mcp.get_tool(name)) is not None
+
+
+def test_default_profile_is_core(monkeypatch):
+    monkeypatch.delenv("INSPECTOR_PROFILE", raising=False)
+    assert Config.from_env().profile == "core"
+
+
 # --- 2. friendly error at the boundary ---------------------------------------
 
 def test_friendly_turns_keyerror_into_usable_dict():

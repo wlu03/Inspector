@@ -55,6 +55,29 @@ DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorl
 # EXTERNAL = reaches a third-party service (Devin) and records its result — not read-only.
 EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
 
+# Default 'core' tool surface (INSPECTOR_PROFILE=core). The rest are advanced/admin
+# tools, hidden unless INSPECTOR_PROFILE=full.
+CORE_TOOLS = frozenset({
+    "launch_app", "launch_status", "observe", "act", "verify", "audit_dom",
+    "report_issue", "get_findings", "stop", "test_app",
+})
+ADVANCED_TOOLS = frozenset({
+    "update_finding_status", "open_dashboard", "build_dashboard", "list_runs",
+    "get_run", "fix_finding", "verify_fix", "bug_ledger", "fix_with_devin",
+    "devin_status", "test_app_parallel", "test_feature", "set_plan",
+    "update_scenario", "test_report",
+})
+
+def _apply_profile() -> None:
+    """core profile hides the advanced/admin tools from MCP clients; full exposes all."""
+    if CONFIG.profile in ("full", "advanced", "all"):
+        return
+    for _name in ADVANCED_TOOLS:
+        try:
+            mcp.remove_tool(_name)
+        except Exception:
+            pass
+
 
 def _friendly(fn):
     """Turn a raw KeyError from an unknown/expired session_id into a usable dict.
@@ -1100,6 +1123,7 @@ def main(argv: list[str] | None = None) -> None:
 
     transport = args.transport or ("http" if args.http else CONFIG.transport)
     if transport == "stdio":
+        _apply_profile()
         mcp.run()
         return
 
@@ -1115,6 +1139,7 @@ def main(argv: list[str] | None = None) -> None:
             "authentication. Bind 127.0.0.1 and front it with an authenticated "
             "tunnel/proxy, or set INSPECTOR_HTTP_HOST=127.0.0.1."
         )
+    _apply_profile()
     log.info("Inspector MCP on %s http://%s:%s%s", transport, host, port, path)
     mcp.run(transport=transport, host=host, port=port, path=path)
 
