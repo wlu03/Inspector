@@ -8,7 +8,7 @@
 
 ## Checklist
 - [ ] `pytest -q` passes
-- [ ] `ruff check .` passes
+- [ ] `ruff check inspector tests` passes
 - [ ] Tests added/updated for changed behavior
 - [ ] No secrets, personal paths, or vendored third-party apps added
 - [ ] Docs / CHANGELOG updated if user-facing
