@@ -9,6 +9,7 @@ import threading
 
 import anyio
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
 
@@ -104,9 +105,10 @@ def _friendly(fn):
                         "(or list_runs / get_run for past runs on disk)",
             }
         except Exception as exc:  # noqa: BLE001
-            # a dead sandbox / CDP / adb error mid-session must return a structured
-            # error, not escape the tool and kill the host's turn.
-            return {"error": "tool failed", "detail": str(exc)[:300]}
+            # Surface a real MCP tool error (isError=true) instead of a success-shaped
+            # {"error": ...} dict. FastMCP returns it as an error result — the host sees
+            # the failure and can recover; it does not crash the turn.
+            raise ToolError(f"tool failed: {str(exc)[:300]}") from exc
     return wrapper
 
 

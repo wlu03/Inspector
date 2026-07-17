@@ -77,6 +77,17 @@ def test_friendly_turns_keyerror_into_usable_dict():
     assert "active_sessions" in out and "hint" in out
 
 
+def test_friendly_reraises_unexpected_as_toolerror():
+    from fastmcp.exceptions import ToolError
+
+    @server._friendly
+    def boom(session_id):
+        raise RuntimeError("cdp transport died")
+
+    with pytest.raises(ToolError):
+        boom("ses_x")
+
+
 # --- 10. human session aliases ------------------------------------------------
 
 def test_manager_get_resolves_alias_or_id():
