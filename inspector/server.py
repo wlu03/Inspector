@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+from typing import TypedDict
 
 import anyio
 from fastmcp import Context, FastMCP
@@ -297,6 +298,73 @@ def _dashboard_links(session_id: str | None = None) -> dict:
         return {"dashboard_error": str(exc)[:200]}
 
 
+# --- typed tool outputs: schemas MCP clients see; tools still return plain dicts ---
+class SessionResult(TypedDict, total=False):
+    session_id: str
+    alias: str | None
+    surface: str
+    state: str
+    ready: bool | None
+    task_id: str
+    note: str
+    error: str
+
+
+class ObserveResult(TypedDict, total=False):
+    elements: list[dict]
+    logs_since_last: list[str]
+    state: str
+    image_omitted: str
+
+
+class ActResult(TypedDict, total=False):
+    changed: bool
+    logs: list[str]
+
+
+class CheckResult(TypedDict, total=False):
+    expectation: str
+    status: str
+    confidence: str
+    evidence: dict
+    note: str
+
+
+class ReportIssueResult(TypedDict, total=False):
+    finding_id: str
+    trace_id: str
+    severity: str
+    total_findings: int
+
+
+class AuditResult(TypedDict, total=False):
+    axe_violations: list
+    broken_images: list
+    unlabeled_inputs: list
+    new_findings: list[str]
+    total_findings: int
+
+
+class StopResult(TypedDict, total=False):
+    ok: bool
+    replay: str
+    dashboard_url: str
+    replay_url: str
+    view: str
+
+
+class TestAppResult(TypedDict, total=False):
+    session_id: str
+    alias: str | None
+    surface: str
+    ready: bool
+    error: str
+    findings: list[dict]
+    findings_total: int
+    dashboard_url: str
+    view: str
+
+
 @mcp.tool(annotations=DESTRUCTIVE)
 async def launch_app(
     repo_path: str,
@@ -306,7 +374,7 @@ async def launch_app(
     wait: bool = True,
     alias: str | None = None,
     ctx: Context = None,
-) -> dict:
+) -> SessionResult:
     """Boot the app in a sandbox and (by default) wait until it's interactive.
 
     Detects the framework/dev command and launches it on the right surface.
@@ -360,7 +428,7 @@ async def launch_app(
 
 @mcp.tool(annotations=READ_ONLY)
 @_friendly
-def launch_status(session_id: str) -> dict:
+def launch_status(session_id: str) -> SessionResult:
     """Poll a background launch (from `launch_app(wait=false)`).
 
     Returns the current state and `ready=true` once the app is interactive. On a
@@ -381,7 +449,7 @@ def launch_status(session_id: str) -> dict:
 
 @mcp.tool(annotations=READ_ONLY)
 @_friendly
-def observe(session_id: str, include_image: bool = True):
+def observe(session_id: str, include_image: bool = True) -> ObserveResult:
     """Screenshot the running app and return a Set-of-Mark image + element list + recent logs.
 
     The image has numbered boxes over interactive elements; pick an id and pass it
@@ -412,7 +480,7 @@ def act(
     key: str | None = None,
     coords: list[int] | None = None,
     include_image: bool = True,
-):
+) -> ActResult:
     """Perform one action and return the post-action Set-of-Mark image + `changed` + logs.
 
     `type` is one of: click, double_click, type, scroll, key, wait.
@@ -431,7 +499,7 @@ def act(
 
 @mcp.tool(annotations=WRITE)
 @_friendly
-def check(session_id: str, expectation: str):
+def check(session_id: str, expectation: str) -> CheckResult:
     """Check for NEW runtime errors and return a screenshot. Three-valued; never a false pass.
 
     Returns status="failed" when a fresh deterministic error (crash, exception, or
@@ -482,7 +550,7 @@ def report_issue(
     suspected_area: str = "",
     repro: list[str] | None = None,
     screenshot_ref: str | None = None,
-) -> dict:
+) -> ReportIssueResult:
     """File a finding the HOST agent judged from the screenshot (host-as-brain).
 
     The host sees what the deterministic log-tap can't — wrong layout, a missing
@@ -529,7 +597,7 @@ def update_finding_status(session_id: str, finding_id: str, status: str) -> dict
 
 @mcp.tool(annotations=WRITE)
 @_friendly
-def audit_dom(session_id: str) -> dict:
+def audit_dom(session_id: str) -> AuditResult:
     """Run a DETERMINISTIC DOM audit (web/Electron) and file any issues as findings.
 
     The strongest evidence tier — structured facts read straight off the live DOM,
@@ -552,7 +620,7 @@ def audit_dom(session_id: str) -> dict:
 
 @mcp.tool(annotations=READ_ONLY)
 @_friendly
-def get_findings(session_id: str) -> list:
+def get_findings(session_id: str) -> list[dict]:
     """Return the findings collected this session (from the deterministic log tap)."""
     session = MANAGER.get(session_id)
     out = []
@@ -757,7 +825,7 @@ def _stop_and_replay(session_id: str) -> dict:
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
-def stop(session_id: str) -> dict:
+def stop(session_id: str) -> StopResult:
     """Tear down the sandbox (released first), then write the replay (html + video)."""
     # resolve an alias to its id so `stop("checkout-flow")` works too
     try:
@@ -828,7 +896,7 @@ async def test_app(
     max_steps: int | None = None,
     alias: str | None = None,
     ctx: Context = None,
-) -> dict:
+) -> TestAppResult:
     """ONE CALL: launch the app in a VM, autonomously explore it, and return the bugs found.
 
     This is the hands-free entry point — it does internally what the granular

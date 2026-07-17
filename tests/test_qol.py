@@ -65,6 +65,12 @@ def test_default_profile_is_core(monkeypatch):
     assert Config.from_env().profile == "core"
 
 
+@pytest.mark.parametrize("name", ["launch_app", "launch_status", "observe", "act", "check",
+                                  "report_issue", "audit_dom", "get_findings", "stop", "test_app"])
+def test_core_tools_expose_output_schema(name):
+    assert _tool(name).output_schema
+
+
 # --- 2. friendly error at the boundary ---------------------------------------
 
 def test_friendly_turns_keyerror_into_usable_dict():
