@@ -23,21 +23,21 @@ DEFAULT_DRIVER_REF = (
 def _load_dotenv() -> None:
     """Load a local .env into os.environ if python-dotenv is available.
 
-    Searches the current working directory upward, so running the server or
-    `python -m inspector.doctor` from the project root picks up `.env`.
+    Resolution: an explicit ``INSPECTOR_ENV_FILE`` path first, then the nearest
+    .env found by walking up from the current working directory. A pip-installed
+    package has no .env beside it, so for non-cwd launches set INSPECTOR_ENV_FILE
+    or pass the keys via the MCP client's env config.
     """
     try:
         from dotenv import find_dotenv, load_dotenv
-
-        load_dotenv(find_dotenv(usecwd=True))
-        # Also load the .env that sits next to the package, regardless of cwd — so
-        # the MCP server finds the keys even when Claude Code launches it elsewhere.
-        pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env_path = os.path.join(pkg_root, ".env")
-        if os.path.exists(env_path):
-            load_dotenv(env_path, override=False)
     except Exception:
-        pass
+        return
+    explicit = os.getenv("INSPECTOR_ENV_FILE")
+    if explicit and os.path.exists(explicit):
+        load_dotenv(explicit, override=False)
+    found = find_dotenv(usecwd=True)
+    if found:
+        load_dotenv(found, override=False)
 
 
 def _env(*names: str, default: str | None = None) -> str | None:

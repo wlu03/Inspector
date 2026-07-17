@@ -120,7 +120,7 @@ class CDPClient:
     """One synchronous CDP session over a WebSocket (lazy `websocket-client`)."""
 
     def __init__(self, ws_url: str, timeout: int = 15):
-        import websocket  # lazy — the `web` optional dep
+        import websocket  # lazy import (websocket-client is a base dep)
 
         # suppress_origin: modern Chromium 403-rejects CDP WS connections whose Origin
         # header isn't allow-listed; sending no Origin avoids that (belt with the

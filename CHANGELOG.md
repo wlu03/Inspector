@@ -20,7 +20,16 @@ follow [Semantic Versioning](https://semver.org/).
   is set.
 - Refuse HTTP binds on non-loopback hosts until authentication is added.
 - README: removed the stale "final branch" notice and fixed dead doc links.
+- **Packaging:** renamed the distribution to `inspector-mcp` (the `inspector` PyPI
+  name is taken); version `0.1.0a1`. The import package stays `inspector`.
+- Pinned `fastmcp==3.4.4` + committed `uv.lock`; split dev tools out of runtime
+  extras (`all` no longer pulls pytest/ruff); made **E2B a fully optional extra**.
+- Moved `replicate` + `websocket-client` into base deps so the default detector +
+  CDP capture work out of the box; `.env` is no longer loaded from `site-packages`.
 
 ### Added
 - Governance docs: `CONTRIBUTING.md`, `SECURITY.md`, this changelog, and GitHub
   issue/PR templates.
+- `inspector-mcp` CLI (`serve` + `doctor`); import-safe `mcp_server.py` (so
+  `fastmcp inspect` works); MCP Registry `server.json`.
+- pyproject metadata: authors, urls, keywords, classifiers; `INSPECTOR_ENV_FILE`.

@@ -1,30 +1,53 @@
 [project]
-name = "inspector"
-version = "0.0.1"
+name = "inspector-mcp"
+version = "0.1.0a1"
 description = "An MCP server that lets a coding agent see, operate, and test the app it built — across web, Electron, Android, and iOS — via pure computer-use."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
+authors = [{ name = "Wesley Lu" }]
+keywords = ["mcp", "model-context-protocol", "testing", "qa", "computer-use", "agent", "electron", "android", "ios"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
-  "fastmcp>=2.0",
+  # Pinned to the tested FastMCP (the 2.x→3.x line moves fast; FastMCP itself
+  # recommends exact pins for servers). Bump deliberately + re-run the suite.
+  "fastmcp==3.4.4",
   "pydantic>=2.0",
   "httpx>=0.27",
   "pillow>=10.0",
   "python-dotenv>=1.0",
+  "replicate>=0.25",        # OmniParser detector (Set-of-Mark grounding) — the default detector
+  "websocket-client>=1.7",  # CDP console/network capture for web/Electron
 ]
 
 [project.optional-dependencies]
-e2b = ["e2b-desktop>=2.0"]            # web/Electron sandbox plane
-replicate = ["replicate>=0.25"]      # hosted OmniParser detector + LLaVA driver
-anthropic = ["anthropic>=0.40"]      # Claude brain (INSPECTOR_DRIVER=anthropic)
-web = ["websocket-client>=1.7"]      # CDP console/network capture (no Playwright)
+# E2B is the OPTIONAL isolated sandbox plane for web/Electron. NOT required to start —
+# without it, web/Electron run locally (execution=local).
+e2b = ["e2b-desktop>=2.0"]
+# Optional autonomous-autopilot brain (the host coding agent is the brain by default).
+anthropic = ["anthropic>=0.40"]
+# Development tooling only.
 dev = ["pytest>=8.0", "ruff>=0.5"]
-all = ["inspector[e2b,replicate,anthropic,web,dev]"]
+# All optional RUNTIME add-ons (sandbox + autopilot brain). Does NOT pull dev tools.
+all = ["inspector-mcp[e2b,anthropic]"]
+
+[project.urls]
+Homepage = "https://github.com/wlu03/Inspector"
+Repository = "https://github.com/wlu03/Inspector"
+Issues = "https://github.com/wlu03/Inspector/issues"
 
 [project.scripts]
-inspector = "inspector.server:main"
-inspector-doctor = "inspector.doctor:main"
+inspector-mcp = "inspector.cli:main"
+inspector = "inspector.cli:main"
 
 [build-system]
 requires = ["hatchling"]

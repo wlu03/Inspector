@@ -132,10 +132,11 @@ inspector/
 Quickstart:
 
 ```bash
-pip install -e ".[all]"     # or ".[dev]" for tests only
-cp .env.example .env        # add E2B_API_KEY + REPLICATE_API_TOKEN
-pytest -q                   # pure unit tests (no cloud SDKs needed)
-python -m inspector.server   # run the MCP server (stdio) — or wire via .mcp.json.example
+pip install -e ".[dev]"     # runtime + dev tools (pytest, ruff)
+cp .env.example .env        # set REPLICATE_API_TOKEN (detector); E2B_API_KEY optional
+inspector-mcp doctor        # verify env + keys
+inspector-mcp serve         # run the MCP server (stdio); also: python -m inspector.server
+pytest -q                   # unit tests
 ```
 
 Per-part build detail (exact APIs/commands) is in [11 — Implementation Steps](docs/11-implementation-steps.md).

@@ -1054,13 +1054,13 @@ def res_findings(sid: str) -> str:
     return json.dumps(load_session_detail(CONFIG.trace_root, sid).get("findings", []), indent=2)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """Run the MCP server. Defaults to stdio (Claude Code/Cursor); `--http` exposes it
     over the network so a remote MCP client (e.g. Devin) can connect.
 
-        python -m inspector.server                 # stdio
-        python -m inspector.server --http          # http://127.0.0.1:8765/mcp
-        python -m inspector.server --http --port 8765   # loopback only (no auth yet)
+        inspector-mcp serve                        # stdio (also: python -m inspector.server)
+        inspector-mcp serve --http                 # http://127.0.0.1:8765/mcp
+        inspector-mcp serve --http --port 8765     # loopback only (no auth yet)
     """
     import argparse
 
@@ -1071,7 +1071,7 @@ def main() -> None:
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--path", default=None)
-    args, _ = parser.parse_known_args()
+    args, _ = parser.parse_known_args(argv)
 
     transport = args.transport or ("http" if args.http else CONFIG.transport)
     if transport == "stdio":

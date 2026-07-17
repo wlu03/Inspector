@@ -8,9 +8,9 @@ How to do tasks **#6** (validate the real agent loop in Claude Code) and **#7**
 ```bash
 cd /path/to/Inspector
 python -m venv .venv && . .venv/bin/activate
-pip install -e ".[all]"
+pip install -e ".[dev]"
 cp .env.example .env            # add E2B_API_KEY + REPLICATE_API_TOKEN
-python -m inspector.doctor       # confirm both keys + SDKs OK
+inspector-mcp doctor             # confirm the detector key + SDKs (E2B optional)
 ```
 
 The MCP server loads `.env` from the current directory or the project root.
@@ -29,7 +29,7 @@ already knows the answer.
 
 ```bash
 claude mcp add --transport stdio --scope user inspector \
-  -- /path/to/Inspector/.venv/bin/inspector
+  -- /path/to/Inspector/.venv/bin/inspector-mcp
 ```
 
 (Or, if you open Claude Code with this folder as the project root, the included
