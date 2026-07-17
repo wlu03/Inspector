@@ -33,6 +33,7 @@ follow [Semantic Versioning](https://semver.org/).
 - `inspector-mcp` CLI (`serve` + `doctor`); import-safe `mcp_server.py` (so
   `fastmcp inspect` works); MCP Registry `server.json`.
 - pyproject metadata: authors, urls, keywords, classifiers; `INSPECTOR_ENV_FILE`.
+- GitHub Actions CI: lint + tests + build + fresh-install + `fastmcp inspect` + `uv.lock` sync check.
 
 ### Security
 - Validate `session_id` before joining it to the trace root (read + write paths),

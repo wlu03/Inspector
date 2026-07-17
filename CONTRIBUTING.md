@@ -10,7 +10,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"        # runtime + pytest + ruff
 cp .env.example .env           # add keys only if you run cloud surfaces
 pytest -q                      # pure unit tests (no cloud SDKs needed)
-ruff check .
+ruff check inspector tests
 ```
 
 Heavy SDKs (fastmcp / e2b / replicate / anthropic) are lazy-imported, so the package
@@ -20,7 +20,7 @@ and the pure tests run with only `pydantic` + `pillow`.
 
 - Branch off `main` (`fix/…`, `feat/…`, `chore/…`).
 - Keep changes focused; add or update tests for behavior you change.
-- Run `pytest -q` and `ruff check .` before opening a PR.
+- Run `pytest -q` and `ruff check inspector tests` before opening a PR.
 - Describe **what** changed, **why**, and **how you verified it** in the PR.
 
 ## Conventions
