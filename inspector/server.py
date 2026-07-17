@@ -21,7 +21,28 @@ from .session import SessionManager
 
 CONFIG = Config.from_env()
 MANAGER = SessionManager(CONFIG)
-mcp = FastMCP("Inspector")
+
+INSTRUCTIONS = (
+    "Inspector drives a real running app so a coding agent can see, operate, and test "
+    "it across web / Electron / Android / iOS, returning reproducible, source-linked "
+    "findings.\n\n"
+    "Typical flow:\n"
+    "1. launch_app(repo_path[, surface, dev_command]) -> session_id  (or test_app for a "
+    "one-call autonomous run).\n"
+    "2. observe(session_id) -> Set-of-Mark screenshot + numbered elements + logs.\n"
+    "3. act(session_id, target_id=..., ...) using an element id from observe.\n"
+    "4. verify(session_id, expectation) to check for new runtime errors; audit_dom for "
+    "deterministic a11y / broken-image / unlabeled-input findings (web/Electron).\n"
+    "5. get_findings(session_id) for evidence-backed results.\n"
+    "6. stop(session_id) to tear down the sandbox and write the replay (returns a "
+    "dashboard link).\n\n"
+    "Fix loop: fix_finding / verify_fix / bug_ledger. Devin auto-fix: fix_with_devin / "
+    "devin_status. Cross-run history: list_runs / get_run and the inspector://sessions "
+    "resources.\n\n"
+    "Setup: only REPLICATE_API_TOKEN (the detector) is required; E2B is optional. Host "
+    "execution is refused over the HTTP transport without INSPECTOR_ALLOW_UNSAFE_LOCAL."
+)
+mcp = FastMCP("Inspector", instructions=INSTRUCTIONS)
 log = logging.getLogger("inspector")
 
 # Tool annotation presets so hosts (Claude Code) can auto-approve safe tools and only

@@ -47,6 +47,11 @@ def test_external_tools_are_openworld(name):
     assert _tool(name).annotations.openWorldHint is True
 
 
+def test_server_exposes_usage_instructions():
+    text = (server.mcp.instructions or "").lower()
+    assert "launch_app" in text and "observe" in text and "act" in text and "stop" in text
+
+
 # --- 2. friendly error at the boundary ---------------------------------------
 
 def test_friendly_turns_keyerror_into_usable_dict():
