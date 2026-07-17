@@ -23,7 +23,7 @@ def _tool(name):
 
 
 @pytest.mark.parametrize("name", ["observe", "get_findings", "list_runs", "get_run",
-                                  "audit_dom", "build_dashboard", "verify", "test_report"])
+                                  "fix_finding", "bug_ledger", "launch_status"])
 def test_safe_tools_are_read_only(name):
     assert _tool(name).annotations.readOnlyHint is True
 
@@ -34,10 +34,17 @@ def test_billed_tools_are_destructive(name):
     assert ann.destructiveHint is True and ann.readOnlyHint is False
 
 
-@pytest.mark.parametrize("name", ["act", "report_issue", "set_plan", "update_scenario"])
+@pytest.mark.parametrize("name", ["act", "report_issue", "set_plan", "update_scenario",
+                                  "verify", "audit_dom", "open_dashboard",
+                                  "build_dashboard", "test_report", "devin_status"])
 def test_mutating_tools_are_write_not_destructive(name):
     ann = _tool(name).annotations
     assert ann.readOnlyHint is False and ann.destructiveHint is False
+
+
+@pytest.mark.parametrize("name", ["devin_status", "fix_with_devin"])
+def test_external_tools_are_openworld(name):
+    assert _tool(name).annotations.openWorldHint is True
 
 
 # --- 2. friendly error at the boundary ---------------------------------------

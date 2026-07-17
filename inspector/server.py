@@ -31,6 +31,8 @@ log = logging.getLogger("inspector")
 READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
+# EXTERNAL = reaches a third-party service (Devin) and records its result — not read-only.
+EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
 
 
 def _friendly(fn):
@@ -377,7 +379,7 @@ def act(
     return data
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 @_friendly
 def verify(session_id: str, expectation: str):
     """Observe the app and report whether a NEW error signal appeared, with a screenshot.
@@ -473,7 +475,7 @@ def update_finding_status(session_id: str, finding_id: str, status: str) -> dict
     return _update(CONFIG.trace_root, session_id, finding_id, status)
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 @_friendly
 def audit_dom(session_id: str) -> dict:
     """Run a DETERMINISTIC DOM audit (web/Electron) and file any issues as findings.
@@ -512,7 +514,7 @@ def get_findings(session_id: str) -> list:
 
 # --- dashboard & cross-session fix loop ---
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 def open_dashboard(session_id: str | None = None) -> dict:
     """Build + serve the dashboard on localhost and return a clickable link.
 
@@ -525,7 +527,7 @@ def open_dashboard(session_id: str | None = None) -> dict:
     return _dashboard_links(session_id)
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 def build_dashboard() -> dict:
     """Aggregate EVERY past session into one static, replayable dashboard + serve it.
 
@@ -669,7 +671,7 @@ def fix_with_devin(signature: str = "", session_id: str = "", finding_id: str = 
     return _devin_fix(sig) if sig else {"error": "provide signature or session_id+finding_id"}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=EXTERNAL)
 def devin_status(devin_session_id: str) -> dict:
     """Poll a Devin fix session; if it opened a PR, record `pr_url` on the issue."""
     return _devin_poll(devin_session_id)
@@ -952,7 +954,7 @@ def update_scenario(
     }
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 @_friendly
 def test_report(session_id: str) -> dict:
     """Return the full test run: per-scenario status + notes + findings, plus totals."""
