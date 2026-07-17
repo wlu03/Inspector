@@ -32,7 +32,7 @@ INSTRUCTIONS = (
     "one-call autonomous run).\n"
     "2. observe(session_id) -> Set-of-Mark screenshot + numbered elements + logs.\n"
     "3. act(session_id, target_id=..., ...) using an element id from observe.\n"
-    "4. verify(session_id, expectation) to check for new runtime errors; audit_dom for "
+    "4. check(session_id, expectation) for new runtime errors (failed | unknown); audit_dom for "
     "deterministic a11y / broken-image / unlabeled-input findings (web/Electron).\n"
     "5. get_findings(session_id) for evidence-backed results.\n"
     "6. stop(session_id) to tear down the sandbox and write the replay (returns a "
@@ -59,7 +59,7 @@ EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldH
 # Default 'core' tool surface (INSPECTOR_PROFILE=core). The rest are advanced/admin
 # tools, hidden unless INSPECTOR_PROFILE=full.
 CORE_TOOLS = frozenset({
-    "launch_app", "launch_status", "observe", "act", "verify", "audit_dom",
+    "launch_app", "launch_status", "observe", "act", "check", "audit_dom",
     "report_issue", "get_findings", "stop", "test_app",
 })
 ADVANCED_TOOLS = frozenset({
@@ -431,14 +431,15 @@ def act(
 
 @mcp.tool(annotations=WRITE)
 @_friendly
-def verify(session_id: str, expectation: str):
-    """Observe the app and report whether a NEW error signal appeared, with a screenshot.
+def check(session_id: str, expectation: str):
+    """Check for NEW runtime errors and return a screenshot. Three-valued; never a false pass.
 
-    Error-signal gate, not a full semantic check: it returns the current Set-of-Mark
-    screenshot plus whether any deterministic error (crash/exception/console error)
-    surfaced *since the last verify* — so an earlier unrelated finding doesn't pin
-    every later check to failed. Judge the returned screenshot against `expectation`
-    for non-error cases.
+    Returns status="failed" when a fresh deterministic error (crash, exception, or
+    console error) surfaced since the last check, else status="unknown" (no runtime
+    error appeared, but this tool cannot confirm a VISUAL expectation). The caller
+    judges the returned Set-of-Mark screenshot against `expectation` to decide a real
+    pass. Only findings new since the last check count, so an earlier unrelated finding
+    does not pin every later check to failed.
     """
     session = MANAGER.get(session_id)
     som, _elements, logs = session.observe()
@@ -455,7 +456,7 @@ def verify(session_id: str, expectation: str):
 
     data = {
         "expectation": expectation,
-        "passed": not has_new_signal,
+        "status": "failed" if has_new_signal else "unknown",
         "confidence": "high" if blocking else ("medium" if has_new_signal else "low"),
         "evidence": {
             "new_findings_since_last_verify": new_count,
@@ -463,8 +464,9 @@ def verify(session_id: str, expectation: str):
             "session_findings_total": total,
             "recent_logs": logs[-10:],
         },
-        "note": "deterministic error signal only — also judge the returned screenshot "
-                "against the expectation.",
+        "note": "runtime-error gate only. 'failed' = a new error surfaced; 'unknown' = "
+                "no new error, but the visual expectation is NOT confirmed. Judge the "
+                "returned screenshot against the expectation to decide a real pass.",
     }
     return _result(Image(data=som, format="png"), data)
 
@@ -1042,7 +1044,7 @@ Target: `{repo_path}`  ·  Goal: {goal}
 4. For each PENDING scenario, run the inner loop:
    a. `observe()` to see the current state.
    b. Decide the next action from the numbered image + element list, **preferring the adversarial move over the happy path**, then `act(...)`. Re-observe after each action (verify-after-act).
-   c. After the key action, `verify(expectation=...)` and `get_findings(...)`. For web/Electron, call `audit_dom()` to collect deterministic a11y / broken-image / unlabeled-input findings the screenshot can't show.
+   c. After the key action, `check(expectation=...)` and `get_findings(...)`. For web/Electron, call `audit_dom()` to collect deterministic a11y / broken-image / unlabeled-input findings the screenshot can't show.
    d. `update_scenario(scenario_id, status=passed|failed|..., notes=..., finding_ids=[...])`.
    e. If you discover new features mid-run, call `set_plan` again to ADAPT the plan.
 5. When no PENDING scenarios remain, `report_issue(...)` anything you SAW that the log tap missed, then `test_report()` and summarize: what passed/failed, the findings (with file:line where available), and recommended fixes. **Finish by giving the user the `dashboard_url` from the result as a clickable link** so they can replay the run and inspect every bug the agent surfaced.

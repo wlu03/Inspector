@@ -35,7 +35,7 @@ def test_billed_tools_are_destructive(name):
 
 
 @pytest.mark.parametrize("name", ["act", "report_issue", "set_plan", "update_scenario",
-                                  "verify", "audit_dom", "open_dashboard",
+                                  "check", "audit_dom", "open_dashboard",
                                   "build_dashboard", "test_report", "devin_status"])
 def test_mutating_tools_are_write_not_destructive(name):
     ann = _tool(name).annotations
