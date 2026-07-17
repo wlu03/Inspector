@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.wlu03/inspector-mcp",
+  "description": "MCP server that lets a coding agent see, operate, and test the app it built — web, Electron, Android, iOS — via pure computer-use, and feed back reproducible findings.",
+  "version": "0.1.0a1",
+  "repository": {
+    "url": "https://github.com/wlu03/Inspector",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "inspector-mcp",
+      "version": "0.1.0a1",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "REPLICATE_API_TOKEN",
+          "description": "Replicate token for the OmniParser element detector (Set-of-Mark grounding). Required for the default detector.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "E2B_API_KEY",
+          "description": "Optional: E2B sandbox plane for running web/Electron apps in an isolated VM. Omit to run locally.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "description": "Optional: brain for the autonomous test_app autopilot. The host agent is the brain by default.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

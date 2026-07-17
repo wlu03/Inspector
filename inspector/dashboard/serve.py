@@ -55,6 +55,18 @@ class _QuietHandler(SimpleHTTPRequestHandler):
         except Exception:
             pass
 
+    def _local_only(self) -> bool:
+        """CSRF + DNS-rebinding guard: accept only same-origin, loopback-Host requests."""
+        host = (self.headers.get("Host") or "").split(":")[0]
+        if host and host not in ("127.0.0.1", "localhost", "::1"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            from urllib.parse import urlparse
+            if urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"):
+                return False
+        return True
+
     def do_GET(self) -> None:
         if self.path.split("?")[0].rstrip("/") == "/live.json":
             try:
@@ -69,6 +81,9 @@ class _QuietHandler(SimpleHTTPRequestHandler):
         import json as _json
 
         path = self.path.split("?")[0]
+        if not self._local_only():
+            self._send_json({"error": "forbidden"}, 403)
+            return
         if not path.startswith("/api/"):
             self._send_json({"error": "not found"}, 404)
             return

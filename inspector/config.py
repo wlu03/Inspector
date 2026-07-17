@@ -23,21 +23,21 @@ DEFAULT_DRIVER_REF = (
 def _load_dotenv() -> None:
     """Load a local .env into os.environ if python-dotenv is available.
 
-    Searches the current working directory upward, so running the server or
-    `python -m inspector.doctor` from the project root picks up `.env`.
+    Resolution: an explicit ``INSPECTOR_ENV_FILE`` path first, then the nearest
+    .env found by walking up from the current working directory. A pip-installed
+    package has no .env beside it, so for non-cwd launches set INSPECTOR_ENV_FILE
+    or pass the keys via the MCP client's env config.
     """
     try:
         from dotenv import find_dotenv, load_dotenv
-
-        load_dotenv(find_dotenv(usecwd=True))
-        # Also load the .env that sits next to the package, regardless of cwd — so
-        # the MCP server finds the keys even when Claude Code launches it elsewhere.
-        pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env_path = os.path.join(pkg_root, ".env")
-        if os.path.exists(env_path):
-            load_dotenv(env_path, override=False)
     except Exception:
-        pass
+        return
+    explicit = os.getenv("INSPECTOR_ENV_FILE")
+    if explicit and os.path.exists(explicit):
+        load_dotenv(explicit, override=False)
+    found = find_dotenv(usecwd=True)
+    if found:
+        load_dotenv(found, override=False)
 
 
 def _env(*names: str, default: str | None = None) -> str | None:
@@ -50,6 +50,18 @@ def _env(*names: str, default: str | None = None) -> str | None:
         if value is not None:
             return value
     return default
+
+
+def _split_paths(value: str | None) -> list[str]:
+    """Split an env value on the OS path separator or commas into a clean list."""
+    if not value:
+        return []
+    out: list[str] = []
+    for chunk in value.replace(",", os.pathsep).split(os.pathsep):
+        chunk = chunk.strip()
+        if chunk:
+            out.append(chunk)
+    return out
 
 
 @dataclass
@@ -166,6 +178,14 @@ class Config:
     http_port: int = 8765
     http_path: str = "/mcp"
 
+    # Security: if set, repo_path must resolve under one of these workspace roots
+    # (else any host path is allowed, just canonicalized to an absolute realpath).
+    workspace_roots: list[str] = field(default_factory=list)
+    # Permit host (non-sandboxed) execution over the HTTP transport. Off by default:
+    # for a networked client, host execution (dev_command + local adapters) is arbitrary
+    # code execution on this machine. The local stdio client is always allowed.
+    allow_unsafe_local: bool = False
+
     @classmethod
     def from_env(cls) -> "Config":
         _load_dotenv()
@@ -212,4 +232,7 @@ class Config:
             http_host=_env("INSPECTOR_HTTP_HOST", default="127.0.0.1") or "127.0.0.1",
             http_port=int(_env("INSPECTOR_HTTP_PORT", default="8765") or "8765"),
             http_path=_env("INSPECTOR_HTTP_PATH", default="/mcp") or "/mcp",
+            workspace_roots=_split_paths(_env("INSPECTOR_WORKSPACE_ROOTS")),
+            allow_unsafe_local=(_env("INSPECTOR_ALLOW_UNSAFE_LOCAL", default="0") or "0")
+            not in ("0", "false", "no", ""),
         )

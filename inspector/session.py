@@ -11,6 +11,7 @@ from .launch.detect import detect_project
 from .loop import LoopGuard
 from .models import Action, ActionType, Element, SessionRecord, SessionState, Surface
 from .perception.detector import OmniParserDetector
+from .paths import safe_repo_path
 from .perception.som import render_set_of_mark
 from .trace import TraceRecorder
 
@@ -311,6 +312,7 @@ class SessionManager:
         self, repo_path: str, surface: Surface | None = None, goal: str = "",
         alias: str | None = None,
     ) -> Session:
+        repo_path = safe_repo_path(repo_path, self.config.workspace_roots)
         if surface is None:
             surface = detect_project(repo_path).surface
         session = Session(repo_path, surface, self.config, goal)
