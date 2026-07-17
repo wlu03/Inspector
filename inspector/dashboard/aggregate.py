@@ -271,6 +271,9 @@ def signature_for_finding(trace_root: str, session_id: str, finding_id: str) -> 
     Lets any surfaced finding — a replay card, not just a ledger row — be handed to
     Devin: resolve it to its signature, then fix_with_devin patches every occurrence.
     """
+    from ..paths import valid_id
+    if not valid_id(session_id):
+        return None
     fdir = os.path.join(trace_root, session_id, "findings")
     if not os.path.isdir(fdir):
         return None
@@ -365,6 +368,10 @@ def fix_prompt(finding: dict, session: dict | None) -> str:
 
 def load_session_detail(trace_root: str, sid: str) -> dict:
     """Full detail for one session: meta + findings (with fix prompts) + timeline."""
+    from ..paths import valid_id
+    if not valid_id(sid):
+        return {"session": None, "run": None, "plan": None,
+                "findings": [], "actions": [], "frames": []}
     sdir = os.path.join(trace_root, sid)
     sess = _read_json(os.path.join(sdir, "session.json"))
     findings = _load_findings(sdir)
@@ -390,6 +397,9 @@ def update_finding_status(trace_root: str, sid: str, finding_id: str, status: st
     """
     if status not in _STATUSES:
         return {"error": f"status must be one of {sorted(_STATUSES)}"}
+    from ..paths import valid_id
+    if not valid_id(sid):
+        return {"error": f"invalid session id {sid!r}"}
     fdir = os.path.join(trace_root, sid, "findings")
     if os.path.isdir(fdir):
         for name in os.listdir(fdir):

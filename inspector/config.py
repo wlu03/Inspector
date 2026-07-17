@@ -52,6 +52,18 @@ def _env(*names: str, default: str | None = None) -> str | None:
     return default
 
 
+def _split_paths(value: str | None) -> list[str]:
+    """Split an env value on the OS path separator or commas into a clean list."""
+    if not value:
+        return []
+    out: list[str] = []
+    for chunk in value.replace(",", os.pathsep).split(os.pathsep):
+        chunk = chunk.strip()
+        if chunk:
+            out.append(chunk)
+    return out
+
+
 @dataclass
 class Config:
     """Runtime configuration, sourced from environment in `from_env`."""
@@ -166,6 +178,10 @@ class Config:
     http_port: int = 8765
     http_path: str = "/mcp"
 
+    # Security: if set, repo_path must resolve under one of these workspace roots
+    # (else any host path is allowed, just canonicalized to an absolute realpath).
+    workspace_roots: list[str] = field(default_factory=list)
+
     @classmethod
     def from_env(cls) -> "Config":
         _load_dotenv()
@@ -212,4 +228,5 @@ class Config:
             http_host=_env("INSPECTOR_HTTP_HOST", default="127.0.0.1") or "127.0.0.1",
             http_port=int(_env("INSPECTOR_HTTP_PORT", default="8765") or "8765"),
             http_path=_env("INSPECTOR_HTTP_PATH", default="/mcp") or "/mcp",
+            workspace_roots=_split_paths(_env("INSPECTOR_WORKSPACE_ROOTS")),
         )
