@@ -15,6 +15,7 @@ from fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
 
 from . import detection
+from .assertions import Assertion, AssertionKind, evaluate_assertions, summarize
 from .config import Config
 from .findings import build_finding
 from .models import ActionType, SessionState, Severity, Surface
@@ -61,7 +62,7 @@ EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldH
 # tools, hidden unless INSPECTOR_PROFILE=full.
 CORE_TOOLS = frozenset({
     "launch_app", "launch_status", "observe", "act", "check", "audit_dom",
-    "report_issue", "get_findings", "stop", "test_app",
+    "report_issue", "get_findings", "stop", "test_app", "check_assertions",
 })
 ADVANCED_TOOLS = frozenset({
     "update_finding_status", "open_dashboard", "build_dashboard", "list_runs",
@@ -330,6 +331,12 @@ class CheckResult(TypedDict, total=False):
     note: str
 
 
+class AssertionsOut(TypedDict, total=False):
+    overall: str
+    counts: dict
+    results: list[dict]
+
+
 class ReportIssueResult(TypedDict, total=False):
     finding_id: str
     trace_id: str
@@ -537,6 +544,56 @@ def check(session_id: str, expectation: str) -> CheckResult:
                 "returned screenshot against the expectation to decide a real pass.",
     }
     return _result(Image(data=som, format="png"), data)
+
+
+def _assertion_context(session, parsed: list[Assertion]) -> dict:
+    """Gather the observation channels the assertions need: visible text, elements,
+    the current URL (CDP surfaces), and control-state for any referenced elements."""
+    _som, elements, _logs = session.observe()
+    texts = [e.label for e in elements if e.label]
+    try:
+        texts += [t.label for t in session.adapter.text_elements() if t.label]
+    except Exception:
+        pass
+    el_dicts = [{"label": e.label, "role": e.role} for e in elements]
+    url = None
+    cdp = getattr(session.adapter, "cdp", None)
+    if cdp is not None:
+        try:
+            v = cdp.evaluate("window.location.href")
+            url = v.strip('"') if isinstance(v, str) else v
+        except Exception:
+            url = None
+    need = {a.on.lower() for a in parsed
+            if a.kind in (AssertionKind.VALUE, AssertionKind.STATE) and a.on}
+    states: dict = {}
+    if need:
+        for e in elements:
+            lab = (e.label or "").lower()
+            if lab in need and lab not in states:
+                try:
+                    states[lab] = session.adapter.control_state(e.id)
+                except Exception:
+                    pass
+    return {"texts": texts, "elements": el_dicts, "url": url, "states": states}
+
+
+@mcp.tool(annotations=WRITE)
+@_friendly
+def check_assertions(session_id: str, assertions: list[Assertion]) -> AssertionsOut:
+    """Evaluate typed assertions against the live app: each pass | fail | inconclusive.
+
+    Unlike `check` (a runtime-error gate), this actually evaluates expectations. Each
+    assertion has {kind, target, op, expected, on}: kind in text | role | value | count
+    | url | state | network | screenshot; op in present | absent | equals | contains |
+    gte | lte. A channel that isn't available (network/screenshot, a missing element, no
+    URL on this surface) returns `inconclusive` with a reason, never a false pass.
+    Returns per-assertion results with evidence plus an `overall` verdict.
+    """
+    session = MANAGER.get(session_id)
+    ctx = _assertion_context(session, assertions)
+    results = evaluate_assertions(assertions, **ctx)
+    return {"results": [r.model_dump() for r in results], **summarize(results)}
 
 
 @mcp.tool(annotations=WRITE)

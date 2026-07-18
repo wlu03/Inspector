@@ -55,7 +55,7 @@ def test_server_exposes_usage_instructions():
 def test_profiles_partition_the_tool_registry():
     both = server.CORE_TOOLS | server.ADVANCED_TOOLS
     assert not (server.CORE_TOOLS & server.ADVANCED_TOOLS)
-    assert len(server.CORE_TOOLS) == 10 and len(both) == 25
+    assert len(server.CORE_TOOLS) == 11 and len(both) == 26
     for name in both:  # every classified tool is actually registered
         assert asyncio.run(server.mcp.get_tool(name)) is not None
 
@@ -66,7 +66,8 @@ def test_default_profile_is_core(monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["launch_app", "launch_status", "observe", "act", "check",
-                                  "report_issue", "audit_dom", "get_findings", "stop", "test_app"])
+                                  "report_issue", "audit_dom", "get_findings", "stop", "test_app",
+                                  "check_assertions"])
 def test_core_tools_expose_output_schema(name):
     assert _tool(name).output_schema
 
