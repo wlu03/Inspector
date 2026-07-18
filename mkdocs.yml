@@ -30,6 +30,7 @@ nav:
   - Architecture: 02-architecture.md
   - MCP Contract: 03-mcp-contract.md
   - Tool Reference: tool-reference.md
+  - Execution Planes: execution-planes.md
   - Core Loop: 04-core-loop.md
   - Detection & Feedback: 05-detection-and-feedback.md
   - Data Schema: 06-data-schema.md
