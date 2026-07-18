@@ -97,10 +97,14 @@ Inspector keeps computer-use's **universality** and Playwright's **deterministic
 | [11 — Implementation Steps](docs/11-implementation-steps.md) | **Build-ready:** every part as ordered, concrete steps with exact APIs/commands |
 | [12 — Accounts & Services](docs/12-accounts-and-services.md) | Every platform to sign up for, by phase (v0 needs only E2B + Replicate) |
 | [13 — Agentic Test Loop](docs/13-agentic-test-loop.md) | Plan-driven QA loop: `set_plan / update_scenario / test_report` + the `run_test_session` prompt |
+| [14 — iOS/macOS Adapter Plan](docs/14-ios-macos-adapter-plan.md) | macOS plane + iOS adapter bring-up |
+| [15 — Multi-Agent Bug Finding](docs/15-multi-agent-bug-finding.md) | Cartographer + parallel exploration methodology |
+| [16 — Devin Integration](docs/16-devin-integration.md) | Hand a finding to Devin to open a fix PR |
+| [MCP Tool Reference](docs/tool-reference.md) | **Generated from code** — every tool, its kind, and description |
 
 ## Status
 
-**Building.** Web surface is end-to-end live-proven; pure-Python core, 13+ MCP tools, deterministic `audit_dom`, adversarial planning, and findings/replay are wired (100+ unit tests). Electron is one refactor out; Android/iOS adapters are further along than the earliest scaffolds. See [docs/08 - Build Plan](docs/08-roadmap.md).
+**Building.** Web surface is end-to-end live-proven; pure-Python core, 25 MCP tools (10 in the default `core` profile), deterministic `audit_dom`, adversarial planning, and findings/replay are wired (349 unit tests, CI-gated). Electron is one refactor out; Android/iOS adapters are further along than the earliest scaffolds. See [docs/08 - Build Plan](docs/08-roadmap.md).
 
 **Scope (decided):** build **all four surfaces** (Web, Electron, Android, iOS) as a **personal/dev tool** — not productionizing yet (no hosting, payments, or hosted dashboard). Signups + build checklist for this scope: [12 — Accounts & Services](docs/12-accounts-and-services.md). Bring runtimes online web → Electron → Android → iOS (infra-readiness order; all four in scope).
 
@@ -116,7 +120,7 @@ The Python package scaffold lives in [`inspector/`](inspector/):
 
 ```
 inspector/
-  server.py        # FastMCP server: launch_app / observe / act / verify / get_findings / stop
+  server.py        # FastMCP server: launch_app / observe / act / check / get_findings / stop
   session.py       # Session + SessionManager — the loop (observe → act → verify-after-act)
   sandbox.py       # E2B Desktop wrapper (lazy-imported)
   models.py        # Session / Element / Action / Finding / Run (pydantic)
@@ -127,7 +131,7 @@ inspector/
   detection.py  findings.py  trace.py  loop.py
 ```
 
-**Status:** core + **Web** adapter wired; **Electron** partial (launch done, window-detection TODO); **Android/iOS** are interface skeletons (M2/M3). Heavy SDKs (fastmcp/e2b/replicate) are lazy-imported, so the package + pure tests run with only `pydantic` + `pillow`. Verified: all sources compile, 8 pure unit tests pass, core import graph loads without the cloud SDKs.
+**Status:** core + **Web** adapter wired; **Electron** partial (launch done, window-detection TODO); **Android/iOS** adapters are in progress. Heavy optional SDKs (e2b, anthropic) are lazy-imported. Verified in CI: all sources compile and 349 unit tests pass.
 
 Quickstart:
 
