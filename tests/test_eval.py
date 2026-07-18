@@ -1,4 +1,4 @@
-from inspector.eval import match_findings, match_findings_semantic
+from inspector.eval import _bug_for_judge, _tool_args, match_findings, match_findings_semantic
 
 # real signatures from the fixture manifests
 EXPECTED = [
@@ -43,15 +43,15 @@ def test_perfect_recall_and_precision():
 def test_two_findings_one_bug_plus_false_positive():
     findings = [
         _f("f1", actual="TypeError: Cannot read properties of undefined (reading 'show')"),  # BUG-01
-        _f("f2", summary="query not invalidated after save"),  # BUG-01 again
+        _f("f2", summary="query not invalidated after save"),  # also BUG-01 (redundant)
         _f("f3", summary="Failed to load resource: 404"),  # noise
     ]
     r = match_findings(EXPECTED, findings)
     assert r["detected"] == 1                      # BUG-01 counted once
     assert r["recall"] == round(1 / 3, 3)
-    assert r["true_positives"] == 2                # both real-bug findings
-    assert r["false_positives"] == 1
-    assert "f3" in r["unmatched_finding_ids"]
+    assert r["true_positives"] == 1                # one-to-one: one finding credited per bug
+    assert r["false_positives"] == 2               # the redundant BUG-01 finding + noise
+    assert "f3" in r["unmatched_finding_ids"] and "f2" in r["unmatched_finding_ids"]
 
 
 def test_no_findings_zero_recall():
@@ -62,3 +62,18 @@ def test_no_findings_zero_recall():
 def test_case_insensitive():
     r = match_findings([EXPECTED[1]], [_f("f", actual="TOGGLE STATE DESYNC")])
     assert r["detected"] == 1
+
+
+def test_tool_args_selects_autopilot_or_cartographer():
+    a = _tool_args("test_app", "/repo", surface="web", max_steps=5)
+    assert a["repo_path"] == "/repo" and a["surface"] == "web"
+    assert a["max_steps"] == 5 and "goal" in a and "max_regions" not in a
+    c = _tool_args("test_feature", "/repo", max_steps=8)
+    assert c["max_regions"] == 8 and "goal" not in c and "max_steps" not in c
+
+
+def test_bug_for_judge_falls_back_to_summary_and_oracle():
+    b = _bug_for_judge({"id": "BUG-01", "summary": "Save crashes", "oracle": "log-tap",
+                        "screen": "Settings", "repro": "click Save"})
+    assert b["what_is_wrong"] == "Save crashes" and b["title"] == "Save crashes"
+    assert b["expected_finding"] == "log-tap" and b["screen"] == "Settings"

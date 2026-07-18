@@ -41,93 +41,122 @@ def _finding_text(f: dict) -> str:
     return " ".join(parts).lower()
 
 
-def match_findings(expected: list[dict], findings: list[dict]) -> dict:
-    """Score `findings` against the manifest's `expected` bugs. Pure.
+def _max_matching(edges: dict[int, set[int]]) -> dict[int, int]:
+    """Maximum bipartite matching (Kuhn's augmenting paths).
 
-    A bug is *detected* if any finding's text contains one of its signatures.
-    Precision = findings matching some bug / all findings; recall = bugs detected /
-    all bugs. Findings matching no signature are false positives (noise vs the
-    manifest — a real-but-unlisted bug also lands here).
+    `edges` maps a bug index to the finding indices it could match. Returns a
+    {finding_index: bug_index} map with each finding matched to at most one bug and
+    each bug to at most one finding, so neither recall nor precision can double-count.
     """
-    ftexts = [(f, _finding_text(f)) for f in findings]
-    matched_finding_ids: set = set()
-    per_bug: list[dict] = []
-    detected = 0
+    finding_to_bug: dict[int, int] = {}
 
-    for bug in expected:
-        sigs = _bug_signatures(bug)
-        hits = [f.get("id") for f, txt in ftexts if sigs and any(s in txt for s in sigs)]
-        for fid in hits:
-            matched_finding_ids.add(fid)
-        is_detected = bool(hits)
+    def augment(bug: int, seen: set[int]) -> bool:
+        for f in sorted(edges.get(bug, ())):
+            if f in seen:
+                continue
+            seen.add(f)
+            if f not in finding_to_bug or augment(finding_to_bug[f], seen):
+                finding_to_bug[f] = bug
+                return True
+        return False
+
+    for bug in sorted(edges):
+        augment(bug, set())
+    return finding_to_bug
+
+
+def _score(expected: list[dict], findings: list[dict], edges: dict[int, set[int]],
+           extra: dict | None = None) -> dict:
+    """Precision / recall / F1 from a one-to-one matching of bugs to findings."""
+    finding_to_bug = _max_matching(edges)
+    bug_to_finding = {b: f for f, b in finding_to_bug.items()}
+    fids = [f.get("id") for f in findings]
+
+    detected = 0
+    per_bug: list[dict] = []
+    for i, bug in enumerate(expected):
+        mf = bug_to_finding.get(i)
+        is_detected = mf is not None
         detected += int(is_detected)
         per_bug.append({
-            "id": bug.get("id"),
-            "screen": bug.get("screen"),
-            "severity": bug.get("severity"),
-            "difficulty": bug.get("difficulty"),
+            "id": bug.get("id"), "screen": bug.get("screen"),
+            "severity": bug.get("severity"), "difficulty": bug.get("difficulty"),
             "detected": is_detected,
-            "matching_finding_ids": hits,
+            "matching_finding_ids": [fids[mf]] if is_detected else [],
         })
 
-    total_expected = len(expected)
-    total_findings = len(findings)
-    tp = len(matched_finding_ids)
-    fp = total_findings - tp
+    total_expected, total_findings = len(expected), len(findings)
+    tp = len(finding_to_bug)  # == detected under a one-to-one matching
+    matched = {fids[f] for f in finding_to_bug}
     recall = detected / total_expected if total_expected else 0.0
     precision = tp / total_findings if total_findings else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-    unmatched = [f.get("id") for f, _ in ftexts if f.get("id") not in matched_finding_ids]
 
-    return {
+    report = {
         "total_expected": total_expected,
         "detected": detected,
         "missed": total_expected - detected,
         "total_findings": total_findings,
         "true_positives": tp,
-        "false_positives": fp,
+        "false_positives": total_findings - tp,
         "precision": round(precision, 3),
         "recall": round(recall, 3),
         "f1": round(f1, 3),
         "per_bug": per_bug,
-        "unmatched_finding_ids": unmatched,
+        "unmatched_finding_ids": [fid for fid in fids if fid not in matched],
     }
+    if extra:
+        report.update(extra)
+    return report
+
+
+def match_findings(expected: list[dict], findings: list[dict]) -> dict:
+    """Score `findings` against the manifest's `expected` bugs. Pure.
+
+    A bug can be matched by any finding whose text contains one of its signatures, then
+    a maximum one-to-one matching is taken: a broad finding cannot inflate recall across
+    several bugs, and a duplicate finding for one bug counts as a false positive.
+    Precision = matched findings / all findings; recall = matched bugs / all bugs.
+    """
+    ftexts = [_finding_text(f) for f in findings]
+    edges: dict[int, set[int]] = {}
+    for i, bug in enumerate(expected):
+        sigs = _bug_signatures(bug)
+        if not sigs:
+            continue
+        cand = {j for j, txt in enumerate(ftexts) if any(s in txt for s in sigs)}
+        if cand:
+            edges[i] = cand
+    return _score(expected, findings, edges)
 
 
 def match_findings_semantic(expected: list[dict], findings: list[dict], mapping: dict) -> dict:
     """Score findings against bugs using a precomputed {bug_id: [finding_ids]} map. Pure.
 
     For log-free fixtures (subtle UI-state bugs), a bug is *detected* when the agent's
-    natural-language finding semantically reports it — judged by an LLM (`mapping`),
-    not by a greppable signature. Shape matches `match_findings` so callers are uniform.
+    natural-language finding semantically reports it, judged by an LLM (`mapping`), not
+    a greppable signature. The mapping's edges are resolved by the same one-to-one
+    matching so the metrics line up with `match_findings`.
     """
-    fids = {f.get("id") for f in findings}
-    matched: set = set()
-    per_bug: list[dict] = []
-    detected = 0
-    for bug in expected:
-        hits = [fid for fid in mapping.get(bug.get("id"), []) if fid in fids]
-        matched.update(hits)
-        is_detected = bool(hits)
-        detected += int(is_detected)
-        per_bug.append({
-            "id": bug.get("id"), "screen": bug.get("screen"),
-            "severity": bug.get("severity"), "difficulty": bug.get("difficulty"),
-            "detected": is_detected, "matching_finding_ids": hits,
-        })
-    total_expected, total_findings = len(expected), len(findings)
-    tp = len(matched)
-    recall = detected / total_expected if total_expected else 0.0
-    precision = tp / total_findings if total_findings else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+    idx = {f.get("id"): j for j, f in enumerate(findings)}
+    edges: dict[int, set[int]] = {}
+    for i, bug in enumerate(expected):
+        cand = {idx[fid] for fid in mapping.get(bug.get("id"), []) if fid in idx}
+        if cand:
+            edges[i] = cand
+    return _score(expected, findings, edges, extra={"scoring": "semantic"})
+
+
+def _bug_for_judge(bug: dict) -> dict:
+    """Normalize a manifest bug for the semantic judge, tolerating both fixture styles
+    (title/description/expected_finding OR summary/oracle/repro)."""
     return {
-        "total_expected": total_expected, "detected": detected,
-        "missed": total_expected - detected, "total_findings": total_findings,
-        "true_positives": tp, "false_positives": total_findings - tp,
-        "precision": round(precision, 3), "recall": round(recall, 3), "f1": round(f1, 3),
-        "per_bug": per_bug,
-        "unmatched_finding_ids": [f.get("id") for f in findings if f.get("id") not in matched],
-        "scoring": "semantic",
+        "id": bug.get("id"),
+        "title": bug.get("title") or bug.get("summary"),
+        "what_is_wrong": bug.get("description") or bug.get("summary"),
+        "expected_finding": bug.get("expected_finding") or bug.get("oracle"),
+        "screen": bug.get("screen"),
+        "repro": bug.get("repro"),
     }
 
 
@@ -141,8 +170,7 @@ def _semantic_mapping(expected: list[dict], findings: list[dict], config) -> dic
 
     import anthropic
 
-    bugs = [{"id": b.get("id"), "title": b.get("title"), "what_is_wrong": b.get("description"),
-             "expected_finding": b.get("expected_finding")} for b in expected]
+    bugs = [_bug_for_judge(b) for b in expected]
     finds = [{"id": f.get("id"), "summary": f.get("summary"), "detail": f.get("actual"),
               "area": f.get("suspected_area")} for f in findings]
     prompt = (
@@ -166,8 +194,30 @@ def _semantic_mapping(expected: list[dict], findings: list[dict], config) -> dic
     return {k: list(v or []) for k, v in raw.items()}
 
 
-def run_and_score(repo_path: str, surface: str | None = None, max_steps: int | None = None) -> dict:
-    """Live: run `test_app` against a fixture and score the findings it produced."""
+def _tool_args(tool: str, repo_path: str, surface: str | None = None,
+               max_steps: int | None = None) -> dict:
+    """Build the call_tool args for the system under test (test_app or test_feature)."""
+    args: dict = {"repo_path": repo_path}
+    if tool == "test_feature":
+        if max_steps:
+            args["max_regions"] = max_steps
+    else:  # test_app autopilot
+        args["goal"] = "exercise every flow and find bugs"
+        if max_steps:
+            args["max_steps"] = max_steps
+    if surface:
+        args["surface"] = surface
+    return args
+
+
+def run_and_score(repo_path: str, surface: str | None = None, max_steps: int | None = None,
+                  tool: str = "test_app") -> dict:
+    """Live: run the system under test (`tool`) against a fixture and score its findings.
+
+    `tool` selects what is measured: "test_app" (the LLM autopilot) or "test_feature"
+    (the deterministic Cartographer). The chosen tool is recorded in the report as
+    `scored_tool`, so results say which system produced them.
+    """
     import asyncio
 
     from fastmcp import Client
@@ -180,12 +230,7 @@ def run_and_score(repo_path: str, surface: str | None = None, max_steps: int | N
 
     async def _run() -> dict:
         async with Client(srv.mcp) as client:
-            args: dict = {"repo_path": repo_path, "goal": "exercise every flow and find bugs"}
-            if surface:
-                args["surface"] = surface
-            if max_steps:
-                args["max_steps"] = max_steps
-            r = await client.call_tool("test_app", args)
+            r = await client.call_tool(tool, _tool_args(tool, repo_path, surface, max_steps))
             return getattr(r, "structured_content", None) or getattr(r, "data", None) or {}
 
     result = asyncio.run(_run())
@@ -202,6 +247,7 @@ def run_and_score(repo_path: str, surface: str | None = None, max_steps: int | N
     else:
         report = match_findings(expected, found)
     report["fixture"] = manifest.get("app", os.path.basename(repo_path.rstrip("/")))
+    report["scored_tool"] = tool
     report["surface"] = result.get("surface", surface)
     report["ready"] = result.get("ready")
     report["stop_reason"] = result.get("stop_reason")
