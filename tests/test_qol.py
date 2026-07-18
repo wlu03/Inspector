@@ -23,7 +23,7 @@ def _tool(name):
 
 
 @pytest.mark.parametrize("name", ["observe", "get_findings", "list_runs", "get_run",
-                                  "audit_dom", "build_dashboard", "verify", "test_report"])
+                                  "fix_finding", "bug_ledger", "launch_status"])
 def test_safe_tools_are_read_only(name):
     assert _tool(name).annotations.readOnlyHint is True
 
@@ -34,10 +34,41 @@ def test_billed_tools_are_destructive(name):
     assert ann.destructiveHint is True and ann.readOnlyHint is False
 
 
-@pytest.mark.parametrize("name", ["act", "report_issue", "set_plan", "update_scenario"])
+@pytest.mark.parametrize("name", ["act", "report_issue", "set_plan", "update_scenario",
+                                  "check", "audit_dom", "open_dashboard",
+                                  "build_dashboard", "test_report", "devin_status"])
 def test_mutating_tools_are_write_not_destructive(name):
     ann = _tool(name).annotations
     assert ann.readOnlyHint is False and ann.destructiveHint is False
+
+
+@pytest.mark.parametrize("name", ["devin_status", "fix_with_devin"])
+def test_external_tools_are_openworld(name):
+    assert _tool(name).annotations.openWorldHint is True
+
+
+def test_server_exposes_usage_instructions():
+    text = (server.mcp.instructions or "").lower()
+    assert "launch_app" in text and "observe" in text and "act" in text and "stop" in text
+
+
+def test_profiles_partition_the_tool_registry():
+    both = server.CORE_TOOLS | server.ADVANCED_TOOLS
+    assert not (server.CORE_TOOLS & server.ADVANCED_TOOLS)
+    assert len(server.CORE_TOOLS) == 10 and len(both) == 25
+    for name in both:  # every classified tool is actually registered
+        assert asyncio.run(server.mcp.get_tool(name)) is not None
+
+
+def test_default_profile_is_core(monkeypatch):
+    monkeypatch.delenv("INSPECTOR_PROFILE", raising=False)
+    assert Config.from_env().profile == "core"
+
+
+@pytest.mark.parametrize("name", ["launch_app", "launch_status", "observe", "act", "check",
+                                  "report_issue", "audit_dom", "get_findings", "stop", "test_app"])
+def test_core_tools_expose_output_schema(name):
+    assert _tool(name).output_schema
 
 
 # --- 2. friendly error at the boundary ---------------------------------------
@@ -50,6 +81,17 @@ def test_friendly_turns_keyerror_into_usable_dict():
     out = boom("ses_missing")
     assert out["error"] == "unknown or expired session"
     assert "active_sessions" in out and "hint" in out
+
+
+def test_friendly_reraises_unexpected_as_toolerror():
+    from fastmcp.exceptions import ToolError
+
+    @server._friendly
+    def boom(session_id):
+        raise RuntimeError("cdp transport died")
+
+    with pytest.raises(ToolError):
+        boom("ses_x")
 
 
 # --- 10. human session aliases ------------------------------------------------

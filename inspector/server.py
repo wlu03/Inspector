@@ -6,9 +6,11 @@ import json
 import logging
 import os
 import threading
+from typing import TypedDict
 
 import anyio
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
 
@@ -21,7 +23,28 @@ from .session import SessionManager
 
 CONFIG = Config.from_env()
 MANAGER = SessionManager(CONFIG)
-mcp = FastMCP("Inspector")
+
+INSTRUCTIONS = (
+    "Inspector drives a real running app so a coding agent can see, operate, and test "
+    "it across web / Electron / Android / iOS, returning reproducible, source-linked "
+    "findings.\n\n"
+    "Typical flow:\n"
+    "1. launch_app(repo_path[, surface, dev_command]) -> session_id  (or test_app for a "
+    "one-call autonomous run).\n"
+    "2. observe(session_id) -> Set-of-Mark screenshot + numbered elements + logs.\n"
+    "3. act(session_id, target_id=..., ...) using an element id from observe.\n"
+    "4. check(session_id, expectation) for new runtime errors (failed | unknown); audit_dom for "
+    "deterministic a11y / broken-image / unlabeled-input findings (web/Electron).\n"
+    "5. get_findings(session_id) for evidence-backed results.\n"
+    "6. stop(session_id) to tear down the sandbox and write the replay (returns a "
+    "dashboard link).\n\n"
+    "Fix loop: fix_finding / verify_fix / bug_ledger. Devin auto-fix: fix_with_devin / "
+    "devin_status. Cross-run history: list_runs / get_run and the inspector://sessions "
+    "resources.\n\n"
+    "Setup: only REPLICATE_API_TOKEN (the detector) is required; E2B is optional. Host "
+    "execution is refused over the HTTP transport without INSPECTOR_ALLOW_UNSAFE_LOCAL."
+)
+mcp = FastMCP("Inspector", instructions=INSTRUCTIONS)
 log = logging.getLogger("inspector")
 
 # Tool annotation presets so hosts (Claude Code) can auto-approve safe tools and only
@@ -31,6 +54,35 @@ log = logging.getLogger("inspector")
 READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
+# EXTERNAL = reaches a third-party service (Devin) and records its result — not read-only.
+EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+
+# Default 'core' tool surface (INSPECTOR_PROFILE=core). The rest are advanced/admin
+# tools, hidden unless INSPECTOR_PROFILE=full.
+CORE_TOOLS = frozenset({
+    "launch_app", "launch_status", "observe", "act", "check", "audit_dom",
+    "report_issue", "get_findings", "stop", "test_app",
+})
+ADVANCED_TOOLS = frozenset({
+    "update_finding_status", "open_dashboard", "build_dashboard", "list_runs",
+    "get_run", "fix_finding", "verify_fix", "bug_ledger", "fix_with_devin",
+    "devin_status", "test_app_parallel", "test_feature", "set_plan",
+    "update_scenario", "test_report",
+})
+
+def _apply_profile() -> None:
+    """core profile hides the advanced/admin tools from MCP clients; full exposes all."""
+    if CONFIG.profile in ("full", "advanced", "all"):
+        return
+    for _name in ADVANCED_TOOLS:
+        try:
+            _provider = getattr(mcp, "local_provider", None)
+            if _provider is not None and hasattr(_provider, "remove_tool"):
+                _provider.remove_tool(_name)
+            else:
+                mcp.remove_tool(_name)
+        except Exception:
+            pass
 
 
 def _friendly(fn):
@@ -54,9 +106,10 @@ def _friendly(fn):
                         "(or list_runs / get_run for past runs on disk)",
             }
         except Exception as exc:  # noqa: BLE001
-            # a dead sandbox / CDP / adb error mid-session must return a structured
-            # error, not escape the tool and kill the host's turn.
-            return {"error": "tool failed", "detail": str(exc)[:300]}
+            # Surface a real MCP tool error (isError=true) instead of a success-shaped
+            # {"error": ...} dict. FastMCP returns it as an error result — the host sees
+            # the failure and can recover; it does not crash the turn.
+            raise ToolError(f"tool failed: {str(exc)[:300]}") from exc
     return wrapper
 
 
@@ -245,6 +298,73 @@ def _dashboard_links(session_id: str | None = None) -> dict:
         return {"dashboard_error": str(exc)[:200]}
 
 
+# --- typed tool outputs: schemas MCP clients see; tools still return plain dicts ---
+class SessionResult(TypedDict, total=False):
+    session_id: str
+    alias: str | None
+    surface: str
+    state: str
+    ready: bool | None
+    task_id: str
+    note: str
+    error: str
+
+
+class ObserveResult(TypedDict, total=False):
+    elements: list[dict]
+    logs_since_last: list[str]
+    state: str
+    image_omitted: str
+
+
+class ActResult(TypedDict, total=False):
+    changed: bool
+    logs: list[str]
+
+
+class CheckResult(TypedDict, total=False):
+    expectation: str
+    status: str
+    confidence: str
+    evidence: dict
+    note: str
+
+
+class ReportIssueResult(TypedDict, total=False):
+    finding_id: str
+    trace_id: str
+    severity: str
+    total_findings: int
+
+
+class AuditResult(TypedDict, total=False):
+    axe_violations: list
+    broken_images: list
+    unlabeled_inputs: list
+    new_findings: list[str]
+    total_findings: int
+
+
+class StopResult(TypedDict, total=False):
+    ok: bool
+    replay: str
+    dashboard_url: str
+    replay_url: str
+    view: str
+
+
+class TestAppResult(TypedDict, total=False):
+    session_id: str
+    alias: str | None
+    surface: str
+    ready: bool
+    error: str
+    findings: list[dict]
+    findings_total: int
+    dashboard_url: str
+    view: str
+
+
 @mcp.tool(annotations=DESTRUCTIVE)
 async def launch_app(
     repo_path: str,
@@ -254,7 +374,7 @@ async def launch_app(
     wait: bool = True,
     alias: str | None = None,
     ctx: Context = None,
-) -> dict:
+) -> SessionResult:
     """Boot the app in a sandbox and (by default) wait until it's interactive.
 
     Detects the framework/dev command and launches it on the right surface.
@@ -308,7 +428,7 @@ async def launch_app(
 
 @mcp.tool(annotations=READ_ONLY)
 @_friendly
-def launch_status(session_id: str) -> dict:
+def launch_status(session_id: str) -> SessionResult:
     """Poll a background launch (from `launch_app(wait=false)`).
 
     Returns the current state and `ready=true` once the app is interactive. On a
@@ -329,7 +449,7 @@ def launch_status(session_id: str) -> dict:
 
 @mcp.tool(annotations=READ_ONLY)
 @_friendly
-def observe(session_id: str, include_image: bool = True):
+def observe(session_id: str, include_image: bool = True) -> ObserveResult:
     """Screenshot the running app and return a Set-of-Mark image + element list + recent logs.
 
     The image has numbered boxes over interactive elements; pick an id and pass it
@@ -360,7 +480,7 @@ def act(
     key: str | None = None,
     coords: list[int] | None = None,
     include_image: bool = True,
-):
+) -> ActResult:
     """Perform one action and return the post-action Set-of-Mark image + `changed` + logs.
 
     `type` is one of: click, double_click, type, scroll, key, wait.
@@ -377,16 +497,17 @@ def act(
     return data
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 @_friendly
-def verify(session_id: str, expectation: str):
-    """Observe the app and report whether a NEW error signal appeared, with a screenshot.
+def check(session_id: str, expectation: str) -> CheckResult:
+    """Check for NEW runtime errors and return a screenshot. Three-valued; never a false pass.
 
-    Error-signal gate, not a full semantic check: it returns the current Set-of-Mark
-    screenshot plus whether any deterministic error (crash/exception/console error)
-    surfaced *since the last verify* — so an earlier unrelated finding doesn't pin
-    every later check to failed. Judge the returned screenshot against `expectation`
-    for non-error cases.
+    Returns status="failed" when a fresh deterministic error (crash, exception, or
+    console error) surfaced since the last check, else status="unknown" (no runtime
+    error appeared, but this tool cannot confirm a VISUAL expectation). The caller
+    judges the returned Set-of-Mark screenshot against `expectation` to decide a real
+    pass. Only findings new since the last check count, so an earlier unrelated finding
+    does not pin every later check to failed.
     """
     session = MANAGER.get(session_id)
     som, _elements, logs = session.observe()
@@ -403,7 +524,7 @@ def verify(session_id: str, expectation: str):
 
     data = {
         "expectation": expectation,
-        "passed": not has_new_signal,
+        "status": "failed" if has_new_signal else "unknown",
         "confidence": "high" if blocking else ("medium" if has_new_signal else "low"),
         "evidence": {
             "new_findings_since_last_verify": new_count,
@@ -411,8 +532,9 @@ def verify(session_id: str, expectation: str):
             "session_findings_total": total,
             "recent_logs": logs[-10:],
         },
-        "note": "deterministic error signal only — also judge the returned screenshot "
-                "against the expectation.",
+        "note": "runtime-error gate only. 'failed' = a new error surfaced; 'unknown' = "
+                "no new error, but the visual expectation is NOT confirmed. Judge the "
+                "returned screenshot against the expectation to decide a real pass.",
     }
     return _result(Image(data=som, format="png"), data)
 
@@ -428,7 +550,7 @@ def report_issue(
     suspected_area: str = "",
     repro: list[str] | None = None,
     screenshot_ref: str | None = None,
-) -> dict:
+) -> ReportIssueResult:
     """File a finding the HOST agent judged from the screenshot (host-as-brain).
 
     The host sees what the deterministic log-tap can't — wrong layout, a missing
@@ -473,9 +595,9 @@ def update_finding_status(session_id: str, finding_id: str, status: str) -> dict
     return _update(CONFIG.trace_root, session_id, finding_id, status)
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 @_friendly
-def audit_dom(session_id: str) -> dict:
+def audit_dom(session_id: str) -> AuditResult:
     """Run a DETERMINISTIC DOM audit (web/Electron) and file any issues as findings.
 
     The strongest evidence tier — structured facts read straight off the live DOM,
@@ -498,7 +620,7 @@ def audit_dom(session_id: str) -> dict:
 
 @mcp.tool(annotations=READ_ONLY)
 @_friendly
-def get_findings(session_id: str) -> list:
+def get_findings(session_id: str) -> list[dict]:
     """Return the findings collected this session (from the deterministic log tap)."""
     session = MANAGER.get(session_id)
     out = []
@@ -512,7 +634,7 @@ def get_findings(session_id: str) -> list:
 
 # --- dashboard & cross-session fix loop ---
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 def open_dashboard(session_id: str | None = None) -> dict:
     """Build + serve the dashboard on localhost and return a clickable link.
 
@@ -525,7 +647,7 @@ def open_dashboard(session_id: str | None = None) -> dict:
     return _dashboard_links(session_id)
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 def build_dashboard() -> dict:
     """Aggregate EVERY past session into one static, replayable dashboard + serve it.
 
@@ -669,7 +791,7 @@ def fix_with_devin(signature: str = "", session_id: str = "", finding_id: str = 
     return _devin_fix(sig) if sig else {"error": "provide signature or session_id+finding_id"}
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=EXTERNAL)
 def devin_status(devin_session_id: str) -> dict:
     """Poll a Devin fix session; if it opened a PR, record `pr_url` on the issue."""
     return _devin_poll(devin_session_id)
@@ -703,7 +825,7 @@ def _stop_and_replay(session_id: str) -> dict:
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
-def stop(session_id: str) -> dict:
+def stop(session_id: str) -> StopResult:
     """Tear down the sandbox (released first), then write the replay (html + video)."""
     # resolve an alias to its id so `stop("checkout-flow")` works too
     try:
@@ -774,7 +896,7 @@ async def test_app(
     max_steps: int | None = None,
     alias: str | None = None,
     ctx: Context = None,
-) -> dict:
+) -> TestAppResult:
     """ONE CALL: launch the app in a VM, autonomously explore it, and return the bugs found.
 
     This is the hands-free entry point — it does internally what the granular
@@ -952,7 +1074,7 @@ def update_scenario(
     }
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=WRITE)
 @_friendly
 def test_report(session_id: str) -> dict:
     """Return the full test run: per-scenario status + notes + findings, plus totals."""
@@ -990,7 +1112,7 @@ Target: `{repo_path}`  ·  Goal: {goal}
 4. For each PENDING scenario, run the inner loop:
    a. `observe()` to see the current state.
    b. Decide the next action from the numbered image + element list, **preferring the adversarial move over the happy path**, then `act(...)`. Re-observe after each action (verify-after-act).
-   c. After the key action, `verify(expectation=...)` and `get_findings(...)`. For web/Electron, call `audit_dom()` to collect deterministic a11y / broken-image / unlabeled-input findings the screenshot can't show.
+   c. After the key action, `check(expectation=...)` and `get_findings(...)`. For web/Electron, call `audit_dom()` to collect deterministic a11y / broken-image / unlabeled-input findings the screenshot can't show.
    d. `update_scenario(scenario_id, status=passed|failed|..., notes=..., finding_ids=[...])`.
    e. If you discover new features mid-run, call `set_plan` again to ADAPT the plan.
 5. When no PENDING scenarios remain, `report_issue(...)` anything you SAW that the log tap missed, then `test_report()` and summarize: what passed/failed, the findings (with file:line where available), and recommended fixes. **Finish by giving the user the `dashboard_url` from the result as a clickable link** so they can replay the run and inspect every bug the agent surfaced.
@@ -1077,6 +1199,7 @@ def main(argv: list[str] | None = None) -> None:
 
     transport = args.transport or ("http" if args.http else CONFIG.transport)
     if transport == "stdio":
+        _apply_profile()
         mcp.run()
         return
 
@@ -1092,6 +1215,7 @@ def main(argv: list[str] | None = None) -> None:
             "authentication. Bind 127.0.0.1 and front it with an authenticated "
             "tunnel/proxy, or set INSPECTOR_HTTP_HOST=127.0.0.1."
         )
+    _apply_profile()
     log.info("Inspector MCP on %s http://%s:%s%s", transport, host, port, path)
     mcp.run(transport=transport, host=host, port=port, path=path)
 

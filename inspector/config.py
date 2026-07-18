@@ -185,6 +185,9 @@ class Config:
     # for a networked client, host execution (dev_command + local adapters) is arbitrary
     # code execution on this machine. The local stdio client is always allowed.
     allow_unsafe_local: bool = False
+    # Tool surface exposed to MCP clients: "core" (default, ~10 core tools) or
+    # "full"/"advanced" (all 25, incl. dashboard/devin/parallel/ledger admin tools).
+    profile: str = "core"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -235,4 +238,5 @@ class Config:
             workspace_roots=_split_paths(_env("INSPECTOR_WORKSPACE_ROOTS")),
             allow_unsafe_local=(_env("INSPECTOR_ALLOW_UNSAFE_LOCAL", default="0") or "0")
             not in ("0", "false", "no", ""),
+            profile=_env("INSPECTOR_PROFILE", default="core") or "core",
         )
