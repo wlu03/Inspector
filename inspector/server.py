@@ -781,7 +781,7 @@ async def verify_fix(session_id: str, finding_id: str, ctx: Context = None) -> d
     """Re-verify ONE finding is fixed by replaying its exact repro on the current build.
 
     Faster + more targeted than a full test_app re-run: it re-launches the app, replays
-    the finding's recorded actions by coordinate, and reports whether the signature
+    the finding's repro (its ReproSpec by semantic locator, else coordinates), and reports whether the signature
     reappears (still_present) or is gone (fixed) — then stamps the finding accordingly.
     Use after editing the code (or after fix_with_devin) to confirm the fix worked.
     """
@@ -802,13 +802,29 @@ async def verify_fix(session_id: str, finding_id: str, ctx: Context = None) -> d
     surface = Surface(sess["surface"]) if sess.get("surface") else None
     summary = finding.get("summary", "")
 
-    res = await _run_with_heartbeat(
-        ctx, "re-verifying fix",
-        lambda: _verify_fix(CONFIG, repo, prior_dir, summary, surface),
-    )
+    spec = None
+    rs = finding.get("repro_spec")
+    if rs:
+        from .models import ReproSpec
+        try:
+            spec = ReproSpec.model_validate(rs)
+        except Exception:
+            spec = None
+
+    if spec and spec.steps:
+        from .reverify import verify_fix_spec
+        res = await _run_with_heartbeat(
+            ctx, "re-verifying (repro spec)",
+            lambda: verify_fix_spec(CONFIG, repo, spec, summary, surface),
+        )
+    else:
+        res = await _run_with_heartbeat(
+            ctx, "re-verifying fix",
+            lambda: _verify_fix(CONFIG, repo, prior_dir, summary, surface),
+        )
     if res.get("status") in ("fixed", "still_present"):
         mark_fixed(prior_dir, summary, fixed=res["status"] == "fixed")
-        res["finding_id"] = finding_id
+    res["finding_id"] = finding_id
     return res
 
 

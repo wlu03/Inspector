@@ -239,6 +239,35 @@ class Session:
             new_ids.append(finding.id)
         return audit, new_ids
 
+    def observation_context(self, labels=frozenset()) -> dict:
+        """The channels assertions / oracles evaluate against: visible text, elements,
+        the current URL (CDP surfaces), and control-state for the requested labels."""
+        _som, elements, _logs = self.observe()
+        texts = [e.label for e in elements if e.label]
+        try:
+            texts += [t.label for t in self.adapter.text_elements() if t.label]
+        except Exception:
+            pass
+        el = [{"label": e.label, "role": e.role} for e in elements]
+        url = None
+        cdp = getattr(self.adapter, "cdp", None)
+        if cdp is not None:
+            try:
+                v = cdp.evaluate("window.location.href")
+                url = v.strip('"') if isinstance(v, str) else v
+            except Exception:
+                url = None
+        want = {str(label).lower() for label in labels}
+        states: dict = {}
+        for e in elements:
+            lab = (e.label or "").lower()
+            if lab in want and lab not in states:
+                try:
+                    states[lab] = self.adapter.control_state(e.id)
+                except Exception:
+                    pass
+        return {"texts": texts, "elements": el, "url": url, "states": states}
+
     # --- helpers ---
     def _resolve(
         self, action_type: ActionType, target_id: int | None,

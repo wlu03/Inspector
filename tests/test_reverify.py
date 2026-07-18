@@ -46,3 +46,31 @@ def test_mark_fixed(tmp_path):
     n = mark_fixed(str(tmp_path), "Save crashed at line 99", fixed=True)  # digits collapse
     assert n == 1
     assert json.loads((fdir / "f1.json").read_text())["status"] == "fixed"
+
+
+def test_replay_spec_semantic_and_not_run():
+    from inspector.models import Element, ReproSpec, ReproStep
+    from inspector.reverify import replay_spec
+
+    class _Sess:
+        def __init__(self, labels):
+            self.last_elements = [Element(id=i, label=lbl, bbox=[0, 0, 1, 1])
+                                  for i, lbl in enumerate(labels)]
+            self.acts = []
+
+        def observe(self):
+            return b"", self.last_elements, []
+
+        def act(self, at, target_id=None, text=None, key=None, coords=None):
+            self.acts.append((at.value, target_id, text, key))
+
+    spec = ReproSpec(steps=[ReproStep(action="click", locator="Save"),
+                            ReproStep(action="type", text="hi")])
+    s = _Sess(["Save", "Name"])
+    assert replay_spec(s, spec) == (2, 2)
+    assert s.acts[0][0] == "click" and s.acts[1][0] == "type"
+
+    # a missing locator -> the scenario diverges (not fully reached)
+    spec2 = ReproSpec(steps=[ReproStep(action="click", locator="Missing"),
+                             ReproStep(action="click", locator="Save")])
+    assert replay_spec(_Sess(["Save"]), spec2) == (0, 2)
