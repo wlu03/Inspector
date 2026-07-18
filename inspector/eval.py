@@ -182,8 +182,30 @@ def _semantic_mapping(expected: list[dict], findings: list[dict], config) -> dic
     return {k: list(v or []) for k, v in raw.items()}
 
 
-def run_and_score(repo_path: str, surface: str | None = None, max_steps: int | None = None) -> dict:
-    """Live: run `test_app` against a fixture and score the findings it produced."""
+def _tool_args(tool: str, repo_path: str, surface: str | None = None,
+               max_steps: int | None = None) -> dict:
+    """Build the call_tool args for the system under test (test_app or test_feature)."""
+    args: dict = {"repo_path": repo_path}
+    if tool == "test_feature":
+        if max_steps:
+            args["max_regions"] = max_steps
+    else:  # test_app autopilot
+        args["goal"] = "exercise every flow and find bugs"
+        if max_steps:
+            args["max_steps"] = max_steps
+    if surface:
+        args["surface"] = surface
+    return args
+
+
+def run_and_score(repo_path: str, surface: str | None = None, max_steps: int | None = None,
+                  tool: str = "test_app") -> dict:
+    """Live: run the system under test (`tool`) against a fixture and score its findings.
+
+    `tool` selects what is measured: "test_app" (the LLM autopilot) or "test_feature"
+    (the deterministic Cartographer). The chosen tool is recorded in the report as
+    `scored_tool`, so results say which system produced them.
+    """
     import asyncio
 
     from fastmcp import Client
@@ -196,12 +218,7 @@ def run_and_score(repo_path: str, surface: str | None = None, max_steps: int | N
 
     async def _run() -> dict:
         async with Client(srv.mcp) as client:
-            args: dict = {"repo_path": repo_path, "goal": "exercise every flow and find bugs"}
-            if surface:
-                args["surface"] = surface
-            if max_steps:
-                args["max_steps"] = max_steps
-            r = await client.call_tool("test_app", args)
+            r = await client.call_tool(tool, _tool_args(tool, repo_path, surface, max_steps))
             return getattr(r, "structured_content", None) or getattr(r, "data", None) or {}
 
     result = asyncio.run(_run())
@@ -218,6 +235,7 @@ def run_and_score(repo_path: str, surface: str | None = None, max_steps: int | N
     else:
         report = match_findings(expected, found)
     report["fixture"] = manifest.get("app", os.path.basename(repo_path.rstrip("/")))
+    report["scored_tool"] = tool
     report["surface"] = result.get("surface", surface)
     report["ready"] = result.get("ready")
     report["stop_reason"] = result.get("stop_reason")

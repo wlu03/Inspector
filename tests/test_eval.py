@@ -1,4 +1,4 @@
-from inspector.eval import match_findings, match_findings_semantic
+from inspector.eval import _tool_args, match_findings, match_findings_semantic
 
 # real signatures from the fixture manifests
 EXPECTED = [
@@ -62,3 +62,11 @@ def test_no_findings_zero_recall():
 def test_case_insensitive():
     r = match_findings([EXPECTED[1]], [_f("f", actual="TOGGLE STATE DESYNC")])
     assert r["detected"] == 1
+
+
+def test_tool_args_selects_autopilot_or_cartographer():
+    a = _tool_args("test_app", "/repo", surface="web", max_steps=5)
+    assert a["repo_path"] == "/repo" and a["surface"] == "web"
+    assert a["max_steps"] == 5 and "goal" in a and "max_regions" not in a
+    c = _tool_args("test_feature", "/repo", max_steps=8)
+    assert c["max_regions"] == 8 and "goal" not in c and "max_steps" not in c
