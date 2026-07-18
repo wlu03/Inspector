@@ -1,12 +1,12 @@
 # Inspector
 
-![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
-![MCP](https://img.shields.io/badge/protocol-MCP-6f42c1.svg)
-![Surfaces](https://img.shields.io/badge/surfaces-web%20%7C%20electron%20%7C%20android%20%7C%20ios-0aa.svg)
-![Status](https://img.shields.io/badge/status-building-orange.svg)
-![Tests](https://img.shields.io/badge/tests-100%2B-green.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-[![Docs](https://img.shields.io/badge/docs-DeepWiki-1f6feb.svg)](https://deepwiki.com/wlu03/Inspector/)
+![Python](https://img.shields.io/badge/python-3.12+-blue.svg?logo=python&logoColor=white)
+![MCP](https://img.shields.io/badge/protocol-MCP-6f42c1.svg?logo=anthropic&logoColor=white)
+![Surfaces](https://img.shields.io/badge/surfaces-web%20%7C%20electron%20%7C%20android%20%7C%20ios-0aa.svg?logo=electron&logoColor=white)
+![Status](https://img.shields.io/badge/status-building-orange.svg?logo=githubactions&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-100%2B-green.svg?logo=pytest&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green.svg?logo=opensourceinitiative&logoColor=white)
+[![Docs](https://img.shields.io/badge/docs-DeepWiki-1f6feb.svg?logo=readthedocs&logoColor=white)](https://deepwiki.com/wlu03/Inspector/)
 
 **An MCP server that lets your coding agent see, click, and test the app it just built, then hand back reproducible findings so it can fix bugs on its own. Works on web, Electron, Android, and iOS.**
 
