@@ -56,12 +56,11 @@ pytest -q                   # unit tests
 inspector/     # core plus adapters (web, electron, android, ios) plus perception
 infra/         # how each VM is provisioned
 examples/      # one buggy sample app per surface
-docs/          # design docs 01 through 13
 scripts/       # run helpers, doctor, probes
 ```
 
 ## Docs
 
-**Browsable docs: [deepwiki.com/wlu03/Inspector](https://deepwiki.com/wlu03/Inspector/)** for a searchable, auto-generated overview of the whole codebase.
+**Browsable docs: [deepwiki.com/wlu03/Inspector](https://deepwiki.com/wlu03/Inspector/)** for a searchable, auto-generated overview of the whole codebase, covering vision, architecture, the MCP contract, the core loop, detection, the data schema, the roadmap, and the agentic test loop.
 
-Full design docs also live in [`docs/`](docs/), covering vision, architecture, the MCP contract, the core loop, detection, data schema, roadmap, and the agentic test loop. Start with [01. Vision & Strategy](docs/01-vision-and-strategy.md) and [08. Build Plan](docs/08-roadmap.md). See [TESTING.md](TESTING.md) to validate with a real Claude Code agent.
+See [TESTING.md](TESTING.md) to validate with a real Claude Code agent.
