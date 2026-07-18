@@ -6,6 +6,7 @@
 ![Status](https://img.shields.io/badge/status-building-orange.svg)
 ![Tests](https://img.shields.io/badge/tests-100%2B-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
+[![Docs](https://img.shields.io/badge/docs-DeepWiki-1f6feb.svg)](https://deepwiki.com/wlu03/Inspector/)
 
 **An MCP server that lets your coding agent see, click, and test the app it just built, then hand back reproducible findings so it can fix bugs on its own. Works on web, Electron, Android, and iOS.**
 
@@ -61,4 +62,6 @@ scripts/       # run helpers, doctor, probes
 
 ## Docs
 
-Full design docs live in [`docs/`](docs/), covering vision, architecture, the MCP contract, the core loop, detection, data schema, roadmap, and the agentic test loop. Start with [01. Vision & Strategy](docs/01-vision-and-strategy.md) and [08. Build Plan](docs/08-roadmap.md). See [TESTING.md](TESTING.md) to validate with a real Claude Code agent.
+**Browsable docs: [deepwiki.com/wlu03/Inspector](https://deepwiki.com/wlu03/Inspector/)** for a searchable, auto-generated overview of the whole codebase.
+
+Full design docs also live in [`docs/`](docs/), covering vision, architecture, the MCP contract, the core loop, detection, data schema, roadmap, and the agentic test loop. Start with [01. Vision & Strategy](docs/01-vision-and-strategy.md) and [08. Build Plan](docs/08-roadmap.md). See [TESTING.md](TESTING.md) to validate with a real Claude Code agent.
