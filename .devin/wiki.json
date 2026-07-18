@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "title": "Inspector",
+  "description": "An MCP server that lets a coding agent see, operate, and test the app it built across web, Electron, Android, and iOS, and feed back reproducible, source-linked findings.",
+  "pages": [
+    {
+      "title": "Overview & Quickstart",
+      "description": "What Inspector is, the gap it fills, and how to install and run it.",
+      "source_files": ["README.md", "docs/01-vision-and-strategy.md"]
+    },
+    {
+      "title": "Architecture & Trust Boundaries",
+      "description": "The SurfaceAdapter abstraction, execution planes, and the security model.",
+      "source_files": ["docs/02-architecture.md", "SECURITY.md", "inspector/paths.py"]
+    },
+    {
+      "title": "MCP Contract",
+      "description": "The tool surface (core vs advanced profile), annotations, and the session state machine.",
+      "source_files": ["docs/03-mcp-contract.md", "docs/tool-reference.md", "inspector/server.py"]
+    },
+    {
+      "title": "Core Loop & Session Lifecycle",
+      "description": "perceive to ground to act to check, grounding-by-id, and session launch/teardown.",
+      "source_files": ["docs/04-core-loop.md", "inspector/session.py"]
+    },
+    {
+      "title": "Detection & Evidence Channels",
+      "description": "Deterministic detection, the DOM audit, finding synthesis, and reproducibility.",
+      "source_files": ["docs/05-detection-and-feedback.md", "inspector/detection.py"]
+    },
+    {
+      "title": "Surface Adapters",
+      "description": "Web, Electron, Android, iOS, and native macOS adapters and their planes.",
+      "source_files": ["docs/14-ios-macos-adapter-plan.md", "inspector/adapters/__init__.py"]
+    },
+    {
+      "title": "Cartographer Method",
+      "description": "Region-decomposed deterministic lens sweep and multi-agent bug finding.",
+      "source_files": ["docs/15-multi-agent-bug-finding.md"]
+    },
+    {
+      "title": "Evaluation Protocol",
+      "description": "How Inspector is scored: one-to-one matching, the system under test, and fixtures.",
+      "source_files": ["inspector/eval.py", "docs/10-research-notes.md"]
+    },
+    {
+      "title": "Devin Integration",
+      "description": "Hand a finding to Devin to open a fix PR, and poll its status.",
+      "source_files": ["docs/16-devin-integration.md", "inspector/devin.py"]
+    },
+    {
+      "title": "Contributing & Changelog",
+      "description": "Development setup, conventions, and the change history.",
+      "source_files": ["CONTRIBUTING.md", "CHANGELOG.md"]
+    }
+  ]
+}
