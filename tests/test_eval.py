@@ -1,4 +1,4 @@
-from inspector.eval import _tool_args, match_findings, match_findings_semantic
+from inspector.eval import _bug_for_judge, _tool_args, match_findings, match_findings_semantic
 
 # real signatures from the fixture manifests
 EXPECTED = [
@@ -70,3 +70,10 @@ def test_tool_args_selects_autopilot_or_cartographer():
     assert a["max_steps"] == 5 and "goal" in a and "max_regions" not in a
     c = _tool_args("test_feature", "/repo", max_steps=8)
     assert c["max_regions"] == 8 and "goal" not in c and "max_steps" not in c
+
+
+def test_bug_for_judge_falls_back_to_summary_and_oracle():
+    b = _bug_for_judge({"id": "BUG-01", "summary": "Save crashes", "oracle": "log-tap",
+                        "screen": "Settings", "repro": "click Save"})
+    assert b["what_is_wrong"] == "Save crashes" and b["title"] == "Save crashes"
+    assert b["expected_finding"] == "log-tap" and b["screen"] == "Settings"

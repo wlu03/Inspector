@@ -147,6 +147,19 @@ def match_findings_semantic(expected: list[dict], findings: list[dict], mapping:
     return _score(expected, findings, edges, extra={"scoring": "semantic"})
 
 
+def _bug_for_judge(bug: dict) -> dict:
+    """Normalize a manifest bug for the semantic judge, tolerating both fixture styles
+    (title/description/expected_finding OR summary/oracle/repro)."""
+    return {
+        "id": bug.get("id"),
+        "title": bug.get("title") or bug.get("summary"),
+        "what_is_wrong": bug.get("description") or bug.get("summary"),
+        "expected_finding": bug.get("expected_finding") or bug.get("oracle"),
+        "screen": bug.get("screen"),
+        "repro": bug.get("repro"),
+    }
+
+
 def _semantic_mapping(expected: list[dict], findings: list[dict], config) -> dict:
     """Ask Claude which findings report which bugs → {bug_id: [finding_ids]}.
 
@@ -157,8 +170,7 @@ def _semantic_mapping(expected: list[dict], findings: list[dict], config) -> dic
 
     import anthropic
 
-    bugs = [{"id": b.get("id"), "title": b.get("title"), "what_is_wrong": b.get("description"),
-             "expected_finding": b.get("expected_finding")} for b in expected]
+    bugs = [_bug_for_judge(b) for b in expected]
     finds = [{"id": f.get("id"), "summary": f.get("summary"), "detail": f.get("actual"),
               "area": f.get("suspected_area")} for f in findings]
     prompt = (

@@ -1,4 +1,5 @@
 {
+  "scoring": "semantic",
   "app": "Acme Workspace (sample-buggy-app)",
   "surface": "web",
   "note": "Intentional fixture bugs. Each is a different class so Inspector's oracles get full coverage. DO NOT FIX — they are the test targets.",
