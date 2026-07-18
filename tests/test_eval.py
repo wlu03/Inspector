@@ -43,15 +43,15 @@ def test_perfect_recall_and_precision():
 def test_two_findings_one_bug_plus_false_positive():
     findings = [
         _f("f1", actual="TypeError: Cannot read properties of undefined (reading 'show')"),  # BUG-01
-        _f("f2", summary="query not invalidated after save"),  # BUG-01 again
+        _f("f2", summary="query not invalidated after save"),  # also BUG-01 (redundant)
         _f("f3", summary="Failed to load resource: 404"),  # noise
     ]
     r = match_findings(EXPECTED, findings)
     assert r["detected"] == 1                      # BUG-01 counted once
     assert r["recall"] == round(1 / 3, 3)
-    assert r["true_positives"] == 2                # both real-bug findings
-    assert r["false_positives"] == 1
-    assert "f3" in r["unmatched_finding_ids"]
+    assert r["true_positives"] == 1                # one-to-one: one finding credited per bug
+    assert r["false_positives"] == 2               # the redundant BUG-01 finding + noise
+    assert "f3" in r["unmatched_finding_ids"] and "f2" in r["unmatched_finding_ids"]
 
 
 def test_no_findings_zero_recall():
