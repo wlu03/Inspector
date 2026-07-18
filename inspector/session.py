@@ -7,6 +7,7 @@ from . import detection
 from .adapters import get_adapter
 from .adapters.base import InputAction, SurfaceAdapter
 from .config import Config
+from .findings import build_repro_spec
 from .launch.detect import detect_project
 from .loop import LoopGuard
 from .models import Action, ActionType, Element, SessionRecord, SessionState, Surface
@@ -232,6 +233,7 @@ class Session:
             self._seen_findings.add(sig)
             if not finding.repro:
                 finding.repro = self.action_log[-4:] or ["deterministic DOM audit"]
+            finding.repro_spec = build_repro_spec(self)
             self.trace.save_finding(finding)
             self.record.findings.append(finding.id)
             new_ids.append(finding.id)
@@ -287,6 +289,7 @@ class Session:
             self._seen_findings.add(sig)
             if not finding.repro:
                 finding.repro = self.action_log[-4:] or ["(observed without prior actions)"]
+            finding.repro_spec = build_repro_spec(self)
             self.trace.save_finding(finding)
             self.record.findings.append(finding.id)
             new += 1

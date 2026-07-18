@@ -17,7 +17,7 @@ from mcp.types import ToolAnnotations
 from . import detection
 from .assertions import Assertion, AssertionKind, evaluate_assertions, summarize
 from .config import Config
-from .findings import build_finding
+from .findings import build_finding, build_repro_spec
 from .models import ActionType, SessionState, Severity, Surface
 from .plan import ScenarioStatus, build_plan
 from .session import SessionManager
@@ -628,6 +628,7 @@ def report_issue(
         repro=repro or session.action_log[-4:],
         screenshot_refs=[screenshot_ref] if screenshot_ref else [],
     )
+    finding.repro_spec = build_repro_spec(session)
     session.trace.save_finding(finding)
     session.record.findings.append(finding.id)
     return {

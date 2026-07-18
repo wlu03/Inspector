@@ -6,6 +6,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from .assertions import Assertion
+
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(5)}"
@@ -98,6 +100,25 @@ class Action(BaseModel):
     logs: list[str] = Field(default_factory=list)
 
 
+class ReproStep(BaseModel):
+    action: str            # click | type | key | scroll | ...
+    locator: str = ""      # semantic: the element's label/role, not raw coordinates
+    text: str | None = None
+    key: str | None = None
+
+
+class ReproSpec(BaseModel):
+    """Durable, replayable spec for a finding: the state it needs, the minimal semantic
+    action sequence, and an explicit oracle — so re-verification is a real check, not
+    'a similar summary did not reappear'."""
+
+    surface: str = ""
+    route: str = ""
+    preconditions: list[str] = Field(default_factory=list)
+    steps: list[ReproStep] = Field(default_factory=list)
+    oracle: list[Assertion] = Field(default_factory=list)
+
+
 class Finding(BaseModel):
     id: str = Field(default_factory=lambda: new_id("fnd"))
     session_id: str = ""
@@ -115,6 +136,7 @@ class Finding(BaseModel):
     bbox: list[float] = Field(default_factory=list)
     trace_id: str = ""
     status: str = "open"  # open | fixed | verified | dismissed
+    repro_spec: ReproSpec | None = None
     pr_url: str | None = None
     ts: str = Field(default_factory=_now)
 
