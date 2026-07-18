@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import sys
+
 from .config import Config
 
 
@@ -13,6 +16,14 @@ def _info(label: str, ok: bool, detail: str = "") -> None:
     """Report an optional/informational check — never fails the run."""
     mark = "OK" if ok else "--"
     print(f"  [{mark}] {label}" + (f" — {detail}" if detail else ""))
+
+
+def _importable(mod: str) -> bool:
+    try:
+        __import__(mod)
+        return True
+    except Exception:
+        return False
 
 
 def main() -> int:
@@ -53,16 +64,28 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             _info(f"import {mod} ({why})", False, "not installed")
 
-    print("\nSurface toolchains (optional — only needed for that surface):")
+    print("\nExecution planes (install what your target surface needs):")
     import shutil
-    _info("node (web/electron)", bool(shutil.which("node")))
-    _info("adb + emulator (android)",
-          bool(shutil.which("adb")) and bool(shutil.which("emulator")))
+
+    from .adapters.local_web import chrome_bin
+    chrome = os.path.exists(chrome_bin()) or bool(shutil.which(chrome_bin()))
+    node = bool(shutil.which("node"))
     idb = (cfg.ios_idb_bin if (cfg.ios_idb_bin and "/" in cfg.ios_idb_bin)
            else shutil.which(cfg.ios_idb_bin or "idb"))
-    ios_ok = bool(shutil.which("xcrun")) and bool(idb) and bool(shutil.which("idb_companion"))
-    _info("xcrun + idb + idb_companion (ios)", ios_ok,
-          "" if ios_ok else f"INSPECTOR_IDB_BIN={cfg.ios_idb_bin}")
+    _info("web/Electron in the E2B sandbox: E2B_API_KEY + e2b-desktop",
+          bool(cfg.e2b_api_key) and _importable("e2b_desktop"))
+    _info("local web: node + Chrome/Chromium", node and chrome)
+    _info("local Electron: node (+ the app's own electron dependency)", node)
+    _info("Android (local AVD): adb + emulator (Android SDK)",
+          bool(shutil.which("adb")) and bool(shutil.which("emulator")))
+    _info("Android (Redroid container): docker", bool(shutil.which("docker")))
+    _info("iOS: xcrun + idb + idb_companion",
+          bool(shutil.which("xcrun")) and bool(idb) and bool(shutil.which("idb_companion")),
+          "" if (shutil.which("xcrun") and idb) else f"INSPECTOR_IDB_BIN={cfg.ios_idb_bin}")
+    _info("macOS/iOS VM: tart (or set INSPECTOR_MACOS_HOST for a remote Mac)",
+          bool(shutil.which("tart")) or bool(cfg.macos_host))
+    _info("macOS native app: this host + Accessibility permission",
+          sys.platform == "darwin")
 
     print()
     if required_ok:

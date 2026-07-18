@@ -5,48 +5,48 @@
   "pages": [
     {
       "title": "Overview & Quickstart",
-      "description": "What Inspector is, the gap it fills, and how to install and run it.",
-      "source_files": ["README.md", "docs/01-vision-and-strategy.md"]
+      "description": "What Inspector is, install, quickstart, and the required keys per plane.",
+      "source_files": ["README.md", "TESTING.md", "inspector/doctor.py"]
     },
     {
       "title": "Architecture & Trust Boundaries",
       "description": "The SurfaceAdapter abstraction, execution planes, and the security model.",
-      "source_files": ["docs/02-architecture.md", "SECURITY.md", "inspector/paths.py"]
+      "source_files": ["inspector/adapters/__init__.py", "SECURITY.md", "inspector/paths.py"]
     },
     {
       "title": "MCP Contract",
-      "description": "The tool surface (core vs advanced profile), annotations, and the session state machine.",
-      "source_files": ["docs/03-mcp-contract.md", "docs/tool-reference.md", "inspector/server.py"]
+      "description": "The tool surface (core vs advanced profile), annotations, resources, and prompts.",
+      "source_files": ["inspector/server.py", "inspector/config.py"]
     },
     {
       "title": "Core Loop & Session Lifecycle",
       "description": "perceive to ground to act to check, grounding-by-id, and session launch/teardown.",
-      "source_files": ["docs/04-core-loop.md", "inspector/session.py"]
+      "source_files": ["inspector/session.py", "inspector/loop.py", "inspector/trace.py"]
     },
     {
-      "title": "Detection & Evidence Channels",
-      "description": "Deterministic detection, the DOM audit, finding synthesis, and reproducibility.",
-      "source_files": ["docs/05-detection-and-feedback.md", "inspector/detection.py"]
+      "title": "Perception & Detection",
+      "description": "OmniParser detection, Set-of-Mark, the DOM audit, and finding synthesis.",
+      "source_files": ["inspector/perception/detector.py", "inspector/detection.py", "inspector/audit.py"]
     },
     {
-      "title": "Surface Adapters",
+      "title": "Surface Adapters & Execution Planes",
       "description": "Web, Electron, Android, iOS, and native macOS adapters and their planes.",
-      "source_files": ["docs/14-ios-macos-adapter-plan.md", "inspector/adapters/__init__.py"]
+      "source_files": ["inspector/adapters/__init__.py", "inspector/adapters/local_web.py", "inspector/planes/base.py"]
     },
     {
       "title": "Cartographer Method",
       "description": "Region-decomposed deterministic lens sweep and multi-agent bug finding.",
-      "source_files": ["docs/15-multi-agent-bug-finding.md"]
+      "source_files": ["inspector/cartographer/orchestrator.py", "inspector/cartographer/lenses.py"]
     },
     {
       "title": "Evaluation Protocol",
-      "description": "How Inspector is scored: one-to-one matching, the system under test, and fixtures.",
-      "source_files": ["inspector/eval.py", "docs/10-research-notes.md"]
+      "description": "How Inspector is scored: one-to-one matching and the system under test.",
+      "source_files": ["inspector/eval.py"]
     },
     {
       "title": "Devin Integration",
       "description": "Hand a finding to Devin to open a fix PR, and poll its status.",
-      "source_files": ["docs/16-devin-integration.md", "inspector/devin.py"]
+      "source_files": ["inspector/devin.py"]
     },
     {
       "title": "Contributing & Changelog",

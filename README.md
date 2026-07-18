@@ -1,11 +1,12 @@
 # Inspector
 
-![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
-![MCP](https://img.shields.io/badge/protocol-MCP-6f42c1.svg)
-![Surfaces](https://img.shields.io/badge/surfaces-web%20%7C%20electron%20%7C%20android%20%7C%20ios-0aa.svg)
-![Status](https://img.shields.io/badge/status-building-orange.svg)
-![Tests](https://img.shields.io/badge/tests-100%2B-green.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Python](https://img.shields.io/badge/python-3.12+-blue.svg?logo=python&logoColor=white)
+![MCP](https://img.shields.io/badge/protocol-MCP-6f42c1.svg?logo=anthropic&logoColor=white)
+![Surfaces](https://img.shields.io/badge/surfaces-web%20%7C%20electron%20%7C%20android%20%7C%20ios-0aa.svg?logo=electron&logoColor=white)
+![Status](https://img.shields.io/badge/status-building-orange.svg?logo=githubactions&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-100%2B-green.svg?logo=pytest&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green.svg?logo=opensourceinitiative&logoColor=white)
+[![Docs](https://img.shields.io/badge/docs-DeepWiki-1f6feb.svg?logo=readthedocs&logoColor=white)](https://deepwiki.com/wlu03/Inspector/)
 
 **An MCP server that lets your coding agent see, click, and test the app it just built, then hand back reproducible findings so it can fix bugs on its own. Works on web, Electron, Android, and iOS.**
 
@@ -55,10 +56,11 @@ pytest -q                   # unit tests
 inspector/     # core plus adapters (web, electron, android, ios) plus perception
 infra/         # how each VM is provisioned
 examples/      # one buggy sample app per surface
-docs/          # design docs 01 through 13
 scripts/       # run helpers, doctor, probes
 ```
 
 ## Docs
 
-Full design docs live in [`docs/`](docs/), covering vision, architecture, the MCP contract, the core loop, detection, data schema, roadmap, and the agentic test loop. Start with [01. Vision & Strategy](docs/01-vision-and-strategy.md) and [08. Build Plan](docs/08-roadmap.md). See [TESTING.md](TESTING.md) to validate with a real Claude Code agent.
+**Browsable docs: [deepwiki.com/wlu03/Inspector](https://deepwiki.com/wlu03/Inspector/)** for a searchable, auto-generated overview of the whole codebase, covering vision, architecture, the MCP contract, the core loop, detection, the data schema, the roadmap, and the agentic test loop.
+
+See [TESTING.md](TESTING.md) to validate with a real Claude Code agent.

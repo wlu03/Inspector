@@ -27,3 +27,6 @@ infra/android-redroid/data/
 
 # Fetched benchmark demo apps (see benchmarks/manifests/) - never re-vendor
 .demo-apps/
+
+# design docs (kept local / on DeepWiki, not tracked)
+docs/
