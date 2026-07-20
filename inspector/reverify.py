@@ -107,3 +107,88 @@ def mark_fixed(session_dir: str, target_summary: str, fixed: bool) -> int:
                 json.dump(d, f, indent=2)
             n += 1
     return n
+
+
+def _find_by_label(elements, locator: str):
+    """Re-find an element by its semantic label (exact, then contains). None if absent."""
+    if not locator:
+        return None
+    t = locator.strip().lower()
+    for e in elements:
+        if (e.label or "").strip().lower() == t:
+            return e
+    for e in elements:
+        if t and t in (e.label or "").lower():
+            return e
+    return None
+
+
+def replay_spec(session, spec) -> tuple[int, int]:
+    """Replay a ReproSpec by SEMANTIC locator (re-find each element by label from the
+    live observation), not raw coordinates. Returns (steps_completed, steps_total);
+    stops early when a step's element can't be found (the scenario diverged)."""
+    from .models import ActionType
+
+    steps = list(getattr(spec, "steps", []) or [])
+    valid = {t.value for t in ActionType}
+    done = 0
+    for step in steps:
+        at = ActionType(step.action) if step.action in valid else ActionType.WAIT
+        try:
+            if at in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
+                session.observe()
+                el = _find_by_label(session.last_elements, step.locator)
+                if el is None:
+                    break  # scenario diverged -> not fully reached
+                session.act(at, target_id=el.id)
+            elif at == ActionType.TYPE:
+                session.act(at, text=step.text)
+            elif at == ActionType.KEY:
+                session.act(at, key=step.key)
+            done += 1
+        except Exception:
+            break
+    return done, len(steps)
+
+
+def _eval_oracle(session, oracle) -> str | None:
+    """Evaluate a ReproSpec oracle (the CORRECT behavior). pass -> fixed, fail ->
+    still_present, inconclusive -> not_run. None when there is no oracle."""
+    if not oracle:
+        return None
+    from .assertions import evaluate_assertions, summarize
+    labels = {a.on for a in oracle if getattr(a, "on", "")}
+    results = evaluate_assertions(oracle, **session.observation_context(labels))
+    overall = summarize(results)["overall"]
+    return {"pass": "fixed", "fail": "still_present"}.get(overall, "not_run")
+
+
+def verify_fix_spec(config, repo_path: str, spec, target_summary: str, surface=None) -> dict:
+    """Re-verify using the finding's ReproSpec: launch the current build, replay the
+    scenario by semantic locator, and judge by the explicit oracle (falling back to
+    signature absence). Reports not_run when the scenario can't be reproduced."""
+    from .session import SessionManager
+
+    mgr = SessionManager(config)
+    session = mgr.create(repo_path, surface, goal=f"re-verify: {target_summary[:60]}")
+    sid = session.record.id
+    try:
+        if not session.launch():
+            return {"status": "not_run", "detail": "app did not become ready",
+                    "session_id": sid}
+        done, total = replay_spec(session, spec)
+        if total and done < total:
+            return {"status": "not_run",
+                    "detail": f"scenario diverged at step {done + 1}/{total}",
+                    "steps_replayed": done, "steps_total": total, "session_id": sid}
+        oracle_status = _eval_oracle(session, getattr(spec, "oracle", None))
+        if oracle_status is not None:
+            return {"status": oracle_status, "oracle": True,
+                    "steps_replayed": done, "steps_total": total, "session_id": sid}
+        new = collect_findings(session)
+        present = signature_present(new, target_summary)
+        return {"status": "still_present" if present else "fixed", "reproduced": present,
+                "steps_replayed": done, "steps_total": total, "new_findings": len(new),
+                "session_id": sid}
+    finally:
+        mgr.stop(sid)

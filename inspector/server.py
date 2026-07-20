@@ -15,8 +15,9 @@ from fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
 
 from . import detection
+from .assertions import Assertion, AssertionKind, evaluate_assertions, summarize
 from .config import Config
-from .findings import build_finding
+from .findings import build_finding, build_repro_spec
 from .models import ActionType, SessionState, Severity, Surface
 from .plan import ScenarioStatus, build_plan
 from .session import SessionManager
@@ -61,7 +62,7 @@ EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldH
 # tools, hidden unless INSPECTOR_PROFILE=full.
 CORE_TOOLS = frozenset({
     "launch_app", "launch_status", "observe", "act", "check", "audit_dom",
-    "report_issue", "get_findings", "stop", "test_app",
+    "report_issue", "get_findings", "stop", "test_app", "check_assertions",
 })
 ADVANCED_TOOLS = frozenset({
     "update_finding_status", "open_dashboard", "build_dashboard", "list_runs",
@@ -330,6 +331,12 @@ class CheckResult(TypedDict, total=False):
     note: str
 
 
+class AssertionsOut(TypedDict, total=False):
+    overall: str
+    counts: dict
+    results: list[dict]
+
+
 class ReportIssueResult(TypedDict, total=False):
     finding_id: str
     trace_id: str
@@ -539,6 +546,56 @@ def check(session_id: str, expectation: str) -> CheckResult:
     return _result(Image(data=som, format="png"), data)
 
 
+def _assertion_context(session, parsed: list[Assertion]) -> dict:
+    """Gather the observation channels the assertions need: visible text, elements,
+    the current URL (CDP surfaces), and control-state for any referenced elements."""
+    _som, elements, _logs = session.observe()
+    texts = [e.label for e in elements if e.label]
+    try:
+        texts += [t.label for t in session.adapter.text_elements() if t.label]
+    except Exception:
+        pass
+    el_dicts = [{"label": e.label, "role": e.role} for e in elements]
+    url = None
+    cdp = getattr(session.adapter, "cdp", None)
+    if cdp is not None:
+        try:
+            v = cdp.evaluate("window.location.href")
+            url = v.strip('"') if isinstance(v, str) else v
+        except Exception:
+            url = None
+    need = {a.on.lower() for a in parsed
+            if a.kind in (AssertionKind.VALUE, AssertionKind.STATE) and a.on}
+    states: dict = {}
+    if need:
+        for e in elements:
+            lab = (e.label or "").lower()
+            if lab in need and lab not in states:
+                try:
+                    states[lab] = session.adapter.control_state(e.id)
+                except Exception:
+                    pass
+    return {"texts": texts, "elements": el_dicts, "url": url, "states": states}
+
+
+@mcp.tool(annotations=WRITE)
+@_friendly
+def check_assertions(session_id: str, assertions: list[Assertion]) -> AssertionsOut:
+    """Evaluate typed assertions against the live app: each pass | fail | inconclusive.
+
+    Unlike `check` (a runtime-error gate), this actually evaluates expectations. Each
+    assertion has {kind, target, op, expected, on}: kind in text | role | value | count
+    | url | state | network | screenshot; op in present | absent | equals | contains |
+    gte | lte. A channel that isn't available (network/screenshot, a missing element, no
+    URL on this surface) returns `inconclusive` with a reason, never a false pass.
+    Returns per-assertion results with evidence plus an `overall` verdict.
+    """
+    session = MANAGER.get(session_id)
+    ctx = _assertion_context(session, assertions)
+    results = evaluate_assertions(assertions, **ctx)
+    return {"results": [r.model_dump() for r in results], **summarize(results)}
+
+
 @mcp.tool(annotations=WRITE)
 @_friendly
 def report_issue(
@@ -571,6 +628,7 @@ def report_issue(
         repro=repro or session.action_log[-4:],
         screenshot_refs=[screenshot_ref] if screenshot_ref else [],
     )
+    finding.repro_spec = build_repro_spec(session)
     session.trace.save_finding(finding)
     session.record.findings.append(finding.id)
     return {
@@ -723,7 +781,7 @@ async def verify_fix(session_id: str, finding_id: str, ctx: Context = None) -> d
     """Re-verify ONE finding is fixed by replaying its exact repro on the current build.
 
     Faster + more targeted than a full test_app re-run: it re-launches the app, replays
-    the finding's recorded actions by coordinate, and reports whether the signature
+    the finding's repro (its ReproSpec by semantic locator, else coordinates), and reports whether the signature
     reappears (still_present) or is gone (fixed) — then stamps the finding accordingly.
     Use after editing the code (or after fix_with_devin) to confirm the fix worked.
     """
@@ -744,13 +802,29 @@ async def verify_fix(session_id: str, finding_id: str, ctx: Context = None) -> d
     surface = Surface(sess["surface"]) if sess.get("surface") else None
     summary = finding.get("summary", "")
 
-    res = await _run_with_heartbeat(
-        ctx, "re-verifying fix",
-        lambda: _verify_fix(CONFIG, repo, prior_dir, summary, surface),
-    )
+    spec = None
+    rs = finding.get("repro_spec")
+    if rs:
+        from .models import ReproSpec
+        try:
+            spec = ReproSpec.model_validate(rs)
+        except Exception:
+            spec = None
+
+    if spec and spec.steps:
+        from .reverify import verify_fix_spec
+        res = await _run_with_heartbeat(
+            ctx, "re-verifying (repro spec)",
+            lambda: verify_fix_spec(CONFIG, repo, spec, summary, surface),
+        )
+    else:
+        res = await _run_with_heartbeat(
+            ctx, "re-verifying fix",
+            lambda: _verify_fix(CONFIG, repo, prior_dir, summary, surface),
+        )
     if res.get("status") in ("fixed", "still_present"):
         mark_fixed(prior_dir, summary, fixed=res["status"] == "fixed")
-        res["finding_id"] = finding_id
+    res["finding_id"] = finding_id
     return res
 
 

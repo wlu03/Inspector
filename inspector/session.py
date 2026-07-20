@@ -7,6 +7,7 @@ from . import detection
 from .adapters import get_adapter
 from .adapters.base import InputAction, SurfaceAdapter
 from .config import Config
+from .findings import build_repro_spec
 from .launch.detect import detect_project
 from .loop import LoopGuard
 from .models import Action, ActionType, Element, SessionRecord, SessionState, Surface
@@ -232,10 +233,40 @@ class Session:
             self._seen_findings.add(sig)
             if not finding.repro:
                 finding.repro = self.action_log[-4:] or ["deterministic DOM audit"]
+            finding.repro_spec = build_repro_spec(self)
             self.trace.save_finding(finding)
             self.record.findings.append(finding.id)
             new_ids.append(finding.id)
         return audit, new_ids
+
+    def observation_context(self, labels=frozenset()) -> dict:
+        """The channels assertions / oracles evaluate against: visible text, elements,
+        the current URL (CDP surfaces), and control-state for the requested labels."""
+        _som, elements, _logs = self.observe()
+        texts = [e.label for e in elements if e.label]
+        try:
+            texts += [t.label for t in self.adapter.text_elements() if t.label]
+        except Exception:
+            pass
+        el = [{"label": e.label, "role": e.role} for e in elements]
+        url = None
+        cdp = getattr(self.adapter, "cdp", None)
+        if cdp is not None:
+            try:
+                v = cdp.evaluate("window.location.href")
+                url = v.strip('"') if isinstance(v, str) else v
+            except Exception:
+                url = None
+        want = {str(label).lower() for label in labels}
+        states: dict = {}
+        for e in elements:
+            lab = (e.label or "").lower()
+            if lab in want and lab not in states:
+                try:
+                    states[lab] = self.adapter.control_state(e.id)
+                except Exception:
+                    pass
+        return {"texts": texts, "elements": el, "url": url, "states": states}
 
     # --- helpers ---
     def _resolve(
@@ -287,6 +318,7 @@ class Session:
             self._seen_findings.add(sig)
             if not finding.repro:
                 finding.repro = self.action_log[-4:] or ["(observed without prior actions)"]
+            finding.repro_spec = build_repro_spec(self)
             self.trace.save_finding(finding)
             self.record.findings.append(finding.id)
             new += 1

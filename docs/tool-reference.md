@@ -3,7 +3,7 @@
 _Generated from the server by `scripts/gen_docs.py`. Do not edit by hand;
 run `python scripts/gen_docs.py` to regenerate._
 
-The default `core` profile exposes 10 tools; `INSPECTOR_PROFILE=full` exposes all 25.
+The default `core` profile exposes 11 tools; `INSPECTOR_PROFILE=full` exposes all 26.
 
 ## Core tools (default profile)
 
@@ -12,6 +12,7 @@ The default `core` profile exposes 10 tools; `INSPECTOR_PROFILE=full` exposes al
 | `act` | write | Perform one action and return the post-action Set-of-Mark image + `changed` + logs. |
 | `audit_dom` | write | Run a DETERMINISTIC DOM audit (web/Electron) and file any issues as findings. |
 | `check` | write | Check for NEW runtime errors and return a screenshot. Three-valued; never a false pass. |
+| `check_assertions` | write | Evaluate typed assertions against the live app: each pass | fail | inconclusive. |
 | `get_findings` | read-only | Return the findings collected this session (from the deterministic log tap). |
 | `launch_app` | destructive | Boot the app in a sandbox and (by default) wait until it's interactive. |
 | `launch_status` | read-only | Poll a background launch (from `launch_app(wait=false)`). |
