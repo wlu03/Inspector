@@ -71,6 +71,22 @@ class SurfaceAdapter(ABC):
         """
         return {}
 
+    def network(self) -> list[dict]:
+        """HTTP requests the app made since the previous call — the API-facing channel.
+
+        Most bugs in an app someone just built are backend bugs: a 500, a 404 on a
+        mistyped route, a CORS rejection, a fetch that hangs. None of those print a
+        console line or change a pixel, so `logs()` and the screenshot both report a
+        clean run. Records are {request_id, method, url, resource_type, status,
+        mime_type, failed, error, duration_ms}.
+
+        Kept separate from `logs()` on purpose — a surface must not fold network events
+        into its console tap, or the same failure is counted on both channels. Surfaces
+        that can't observe traffic inherit this empty default, exactly like `audit_dom`
+        and `text_elements`.
+        """
+        return []
+
     def detect_elements(self, screenshot: bytes) -> list[Element] | None:
         """Optional native element source (the accessibility tree).
 

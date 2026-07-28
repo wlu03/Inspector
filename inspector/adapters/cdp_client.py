@@ -1,8 +1,8 @@
 """Synchronous Chrome DevTools Protocol client for LOCAL Chromium surfaces.
 
 Drives a local Electron/Chrome renderer over a WebSocket — screenshot, input,
-console capture, and DOM eval — all through one channel, no OS-level tools
-(xdotool/cliclick/screencapture). Shared by local Electron and (later) local web.
+console capture, network capture, and DOM eval — all through one channel, no OS-level
+tools (xdotool/cliclick/screencapture). Shared by local Electron and (later) local web.
 """
 
 from __future__ import annotations
@@ -200,6 +200,39 @@ def parse_dom_elements(raw, vw: int, vh: int) -> list[Element]:
     return out
 
 
+# A chatty SPA can issue thousands of requests between two drains (polling, analytics,
+# lazy-loaded chunks). The buffer is capped so a long session can't grow without bound;
+# when it overflows we drop SUCCESSFUL traffic first, because a completed 2xx is the one
+# record a tester never needs, while a 500 or a dead fetch is the whole reason this
+# channel exists. See `_is_network_noise`.
+NETWORK_BUFFER_LIMIT = 200
+
+
+def _is_network_noise(rec: dict) -> bool:
+    """True for a request that finished successfully — the first thing to evict.
+
+    Deliberately narrow: a record is only noise once we have SEEN a 2xx for it. Anything
+    still in flight (status None) keeps its slot, because a request that never comes back
+    is itself a finding, and because evicting it would orphan the response events that
+    are still to arrive for that requestId.
+    """
+    status = rec.get("status")
+    return not rec.get("failed") and isinstance(status, int) and 200 <= status < 300
+
+
+def _stamp_duration(rec: dict, ts) -> None:
+    """Record wall time from requestWillBeSent to this event, in ms.
+
+    CDP timestamps are monotonic seconds, and both endpoints come off the same clock, so
+    the subtraction is meaningful even though the values themselves are arbitrary. A
+    missing start (we joined mid-request) simply leaves `duration_ms` as None rather than
+    inventing a number.
+    """
+    start = rec.get("_start")
+    if isinstance(start, (int, float)) and isinstance(ts, (int, float)):
+        rec["duration_ms"] = max(0, int(round((ts - start) * 1000)))
+
+
 class CDPClient:
     """One synchronous CDP session over a WebSocket (lazy `websocket-client`)."""
 
@@ -214,6 +247,10 @@ class CDPClient:
         )
         self._id = 0
         self._console: list[str] = []
+        # requestId -> one merged record. A dict (insertion-ordered) rather than a list
+        # because four separate CDP events describe a single request and they must all
+        # land on the same row; insertion order doubles as the eviction order.
+        self._network: dict[str, dict] = {}
         self._timeout = timeout
 
     def _cmd(self, method: str, params: dict | None = None) -> dict:
@@ -245,16 +282,86 @@ class CDPClient:
         elif m == "Log.entryAdded":
             e = p.get("entry", {})
             self._console.append(f"[log.{e.get('level')}] {e.get('text')}")
+        elif m == "Network.requestWillBeSent":
+            rec = self._network_record(p.get("requestId"))
+            req = p.get("request") or {}
+            rec["method"] = str(req.get("method") or "")
+            rec["url"] = str(req.get("url") or "")
+            rec["resource_type"] = str(p.get("type") or "")
+            rec["_start"] = p.get("timestamp")
+        elif m == "Network.responseReceived":
+            rec = self._network_record(p.get("requestId"))
+            resp = p.get("response") or {}
+            status = resp.get("status")
+            if isinstance(status, (int, float)) and not isinstance(status, bool):
+                rec["status"] = int(status)
+            rec["mime_type"] = str(resp.get("mimeType") or "")
+            if not rec["url"]:
+                rec["url"] = str(resp.get("url") or "")
+            _stamp_duration(rec, p.get("timestamp"))
+        elif m == "Network.loadingFailed":
+            rec = self._network_record(p.get("requestId"))
+            rec["failed"] = True
+            rec["error"] = str(
+                p.get("errorText") or p.get("blockedReason")
+                or ("canceled" if p.get("canceled") else "request failed")
+            )
+            _stamp_duration(rec, p.get("timestamp"))
+        elif m == "Network.loadingFinished":
+            _stamp_duration(self._network_record(p.get("requestId")), p.get("timestamp"))
+
+    def _network_record(self, request_id) -> dict:
+        """Get-or-create the single record this requestId correlates into.
+
+        Creating on a LATE event (a response whose requestWillBeSent was already drained,
+        or that was in flight when Network.enable ran) is deliberate: a 500 or a dead
+        fetch must never be dropped just because we missed the start of its request. Such
+        a record is simply born with empty method/url and fills in from what does arrive.
+        """
+        key = str(request_id or "")
+        rec = self._network.get(key)
+        if rec is None:
+            rec = {"request_id": key, "method": "", "url": "", "resource_type": "",
+                   "status": None, "mime_type": "", "failed": False, "error": "",
+                   "duration_ms": None}
+            self._network[key] = rec
+            while len(self._network) > NETWORK_BUFFER_LIMIT:
+                victim = next((k for k, r in self._network.items() if _is_network_noise(r)),
+                              next(iter(self._network)))
+                del self._network[victim]
+        return rec
 
     def enable(self) -> None:
         self._cmd("Runtime.enable")
         self._cmd("Log.enable")
         self._cmd("Page.enable")
+        # Network is what makes backend bugs visible at all — a 500, a CORS rejection or
+        # a fetch that never resolves produces no console line and no visual change, so
+        # without this domain the tool reports a clean run on a broken API.
+        self._cmd("Network.enable")
 
     def drain_console(self) -> list[str]:
         self._pump()
         out, self._console = self._console, []
         return out
+
+    def drain_network(self) -> list[dict]:
+        """Return the requests seen since the previous call, then forget them.
+
+        Same drain-and-clear contract as `drain_console` so the two channels can be read
+        the same way around an action — but kept strictly SEPARATE from it: network events
+        are never rendered into console lines, or every failed fetch would be counted
+        twice by anything that scans logs for errors.
+
+        Each record is {request_id, method, url, resource_type, status, mime_type, failed,
+        error, duration_ms}. A request still in flight at drain time is returned with
+        whatever is known (status None); its later events land on a fresh record with the
+        same request_id in the NEXT drain, which is the honest reading — the caller asked
+        what happened during that window.
+        """
+        self._pump()
+        records, self._network = self._network, {}
+        return [{k: v for k, v in r.items() if not k.startswith("_")} for r in records.values()]
 
     def _pump(self, budget: float = 0.1) -> None:
         """Read any buffered events without blocking the loop."""

@@ -172,6 +172,13 @@ class LocalElectronAdapter(SurfaceAdapter):
     def logs(self) -> list[str]:
         return self.cdp.drain_console() if self.cdp else []
 
+    def network(self) -> list[dict]:
+        """Requests the renderer made since the last call, straight off the CDP Network
+        domain. Distinct from `logs()` — that stays a pure console tap, so a failed fetch
+        is reported once, on the channel that actually knows its status and timing.
+        Inherited unchanged by LocalWebAdapter."""
+        return self.cdp.drain_network() if self.cdp else []
+
     def detect_elements(self, screenshot: bytes) -> list[Element] | None:
         """DOM is the grounding source — exact element rects, no OmniParser needed."""
         if not self.cdp:

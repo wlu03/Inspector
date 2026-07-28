@@ -226,6 +226,136 @@ global.window = {};  // axe never loads
     assert "axe-core" in out["axe_error"]
 
 
+# --- the CDP Network channel (failed fetches / 500s / CORS are invisible without it) ---
+
+class _NetCDP(CDPClient):
+    """CDPClient with the socket removed: event correlation and the buffer are pure, so
+    feeding synthetic CDP frames through the REAL `_on_event` exercises them offline."""
+
+    def __init__(self):
+        self._console: list[str] = []
+        self._network: dict[str, dict] = {}
+        self.commands: list[str] = []
+
+    def _cmd(self, method, params=None):
+        self.commands.append(method)
+        return {}
+
+    def _pump(self, budget: float = 0.1) -> None:
+        pass
+
+
+def _sent(rid, url="https://api.test/x", method="GET", ts=1.0, kind="XHR"):
+    return {"method": "Network.requestWillBeSent",
+            "params": {"requestId": rid, "type": kind, "timestamp": ts,
+                       "request": {"url": url, "method": method}}}
+
+
+def _received(rid, status=200, mime="application/json", ts=1.2, url=""):
+    return {"method": "Network.responseReceived",
+            "params": {"requestId": rid, "timestamp": ts,
+                       "response": {"status": status, "mimeType": mime, "url": url}}}
+
+
+def _finished(rid, ts=1.25):
+    return {"method": "Network.loadingFinished", "params": {"requestId": rid, "timestamp": ts}}
+
+
+def _failed(rid, error="net::ERR_CONNECTION_REFUSED", ts=1.4):
+    return {"method": "Network.loadingFailed",
+            "params": {"requestId": rid, "timestamp": ts, "errorText": error}}
+
+
+def _feed(cdp, *events):
+    for e in events:
+        cdp._on_event(e)
+    return cdp
+
+
+def test_enable_turns_on_the_network_domain():
+    cdp = _NetCDP()
+    CDPClient.enable(cdp)
+    assert "Network.enable" in cdp.commands
+
+
+def test_network_correlates_four_events_into_one_record():
+    cdp = _feed(_NetCDP(),
+                _sent("42", url="https://api.test/items", method="POST", ts=1.0),
+                _received("42", status=201, mime="application/json", ts=1.2),
+                _finished("42", ts=1.5))
+    recs = cdp.drain_network()
+    assert len(recs) == 1
+    r = recs[0]
+    assert r["method"] == "POST" and r["url"] == "https://api.test/items"
+    assert r["status"] == 201 and r["mime_type"] == "application/json"
+    assert r["failed"] is False and r["error"] == ""
+    assert r["duration_ms"] == 500          # loadingFinished wins over responseReceived
+    assert "_start" not in r                # internal timing key stays internal
+
+
+def test_network_records_a_server_error_and_a_dead_fetch():
+    cdp = _NetCDP()
+    _feed(cdp, _sent("a", url="https://api.test/boom"),
+          _received("a", status=500, mime="text/html"), _finished("a"))
+    _feed(cdp, _sent("b", url="https://api.test/gone"), _failed("b"))
+    by_url = {r["url"]: r for r in cdp.drain_network()}
+    assert by_url["https://api.test/boom"]["status"] == 500
+    assert by_url["https://api.test/boom"]["failed"] is False   # it answered, badly
+    dead = by_url["https://api.test/gone"]
+    assert dead["failed"] is True and "ERR_CONNECTION_REFUSED" in dead["error"]
+    assert dead["status"] is None and dead["duration_ms"] == 400
+
+
+def test_network_keeps_a_response_whose_request_start_was_missed():
+    # In flight when Network.enable ran / already drained: the failure still has to land.
+    cdp = _feed(_NetCDP(), _received("z", status=502, url="https://api.test/late"))
+    r = cdp.drain_network()[0]
+    assert r["status"] == 502 and r["url"] == "https://api.test/late"
+    assert r["method"] == "" and r["duration_ms"] is None
+
+
+def test_network_buffer_is_bounded_and_evicts_successes_before_failures():
+    from inspector.adapters.cdp_client import NETWORK_BUFFER_LIMIT
+    cdp = _NetCDP()
+    _feed(cdp, _sent("fail-1", url="https://api.test/1"), _failed("fail-1"))
+    _feed(cdp, _sent("err-1", url="https://api.test/2"), _received("err-1", status=503),
+          _finished("err-1"))
+    for i in range(NETWORK_BUFFER_LIMIT * 3):     # a chatty app floods the buffer
+        rid = f"ok-{i}"
+        _feed(cdp, _sent(rid, url=f"https://cdn.test/{i}.js"), _received(rid), _finished(rid))
+    recs = cdp.drain_network()
+    assert len(recs) == NETWORK_BUFFER_LIMIT
+    kept = {r["request_id"] for r in recs}
+    assert "fail-1" in kept and "err-1" in kept   # the two records a tester needs
+    assert "ok-0" not in kept                     # oldest successful noise went first
+
+
+def test_drain_network_clears_like_drain_console():
+    cdp = _feed(_NetCDP(), _sent("1"), _received("1"), _finished("1"))
+    assert len(cdp.drain_network()) == 1
+    assert cdp.drain_network() == []
+
+
+def test_network_never_leaks_into_the_console_channel():
+    # Double-counting guard: anything scanning logs() for errors must not also see the
+    # failed request, and the console tap must keep working alongside it.
+    cdp = _feed(_NetCDP(),
+                {"method": "Runtime.consoleAPICalled",
+                 "params": {"type": "error", "args": [{"value": "boom"}]}},
+                _sent("1"), _failed("1"))
+    assert cdp.drain_console() == ["[console.error] boom"]
+    assert [r["failed"] for r in cdp.drain_network()] == [True]
+
+
+def test_adapter_network_delegates_to_cdp_and_noops_without_one():
+    from inspector.adapters.base import SurfaceAdapter
+    a = _adapter(_feed(_NetCDP(), _sent("1", url="https://api.test/u"), _failed("1")))
+    assert a.network()[0]["url"] == "https://api.test/u"
+    a.cdp = None
+    assert a.network() == []
+    assert SurfaceAdapter.network(a) == []       # surfaces without traffic capture no-op
+
+
 def test_get_adapter_local_vs_vm_electron():
     from inspector.adapters.electron import ElectronAdapter
     assert isinstance(get_adapter(Surface.ELECTRON, Config(execution="local")), LocalElectronAdapter)

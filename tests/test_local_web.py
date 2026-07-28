@@ -45,12 +45,37 @@ def test_local_web_runs_the_deterministic_audit():
     assert out["broken_images"] == ["hero.png"] and out["axe_error"]
 
 
+def test_local_web_captures_network_traffic():
+    """Web is where the backend bugs are: the local Chrome adapter must inherit the CDP
+    Network capture rather than the base class's empty list, which reads as no traffic."""
+    assert LocalWebAdapter.network is LocalElectronAdapter.network
+    assert LocalWebAdapter.network is not SurfaceAdapter.network
+
+    a = LocalWebAdapter(Config())
+    assert a.network() == []                        # no CDP session yet → neutral no-op
+    a.cdp = _NetworkingCDP([{"url": "http://localhost:3000/api/todos", "status": 500,
+                             "failed": False, "error": ""}])
+    assert a.network()[0]["status"] == 500
+    assert a.logs() == []                           # console stays a separate channel
+
+
 class _AuditingCDP:
     def __init__(self, result):
         self._result = result
 
     def audit_dom(self):
         return self._result
+
+
+class _NetworkingCDP:
+    def __init__(self, records):
+        self._records = records
+
+    def drain_network(self):
+        return self._records
+
+    def drain_console(self):
+        return []
 
 
 # The old `test_falls_back_to_e2b_without_config` lived here and asserted that local
