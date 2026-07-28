@@ -27,3 +27,6 @@ infra/android-redroid/data/
 
 # Fetched benchmark demo apps (see benchmarks/manifests/) - never re-vendor
 .demo-apps/
+
+# Local backlog / planning list — kept out of the repo
+docs/TODO.md

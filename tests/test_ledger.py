@@ -24,7 +24,7 @@ def _finding(summary, severity="high", status="open"):
             "suspected_area": "App.jsx:10"}
 
 
-def test_ledger_marks_gone_issue_verified_and_present_open(tmp_path):
+def test_ledger_marks_gone_issue_absent_and_present_open(tmp_path):
     root = str(tmp_path)
     # run 1 (older): two bugs. run 2 (newer): only one still reproduces.
     _run(root, "ses_old", "2026-06-01T10:00:00", "/repo",
@@ -32,8 +32,18 @@ def test_ledger_marks_gone_issue_verified_and_present_open(tmp_path):
     _run(root, "ses_new", "2026-06-02T10:00:00", "/repo",
          [_finding("Save does nothing")])
     by_summary = {g["summary"]: g for g in bug_ledger(root)}
-    assert by_summary["Save does nothing"]["status"] == "open"        # still present
-    assert by_summary["Console error boom"]["status"] == "verified"   # gone → fixed
+    assert by_summary["Save does nothing"]["status"] == "open"      # still present
+    # Gone from the latest run, but nobody signed it off — suggestive, not verified.
+    assert by_summary["Console error boom"]["status"] == "absent"
+
+
+def test_ledger_marks_signed_off_issue_verified(tmp_path):
+    root = str(tmp_path)
+    _run(root, "ses_old", "2026-06-01T10:00:00", "/repo",
+         [_finding("Console error boom", "critical", status="verified")])
+    _run(root, "ses_new", "2026-06-02T10:00:00", "/repo", [_finding("Save does nothing")])
+    by_summary = {g["summary"]: g for g in bug_ledger(root)}
+    assert by_summary["Console error boom"]["status"] == "verified"
 
 
 def test_ledger_respects_manual_dismissed(tmp_path):
@@ -52,7 +62,10 @@ def test_latest_update_reports_fixed_new_and_open(tmp_path):
          [_finding("A"), _finding("C")])  # B fixed, C new, A persists
     upd = latest_update(root)
     assert upd["has_prev"] is True
-    assert [x["summary"] for x in upd["verified"]] == ["B"]
+    # B merely stopped reproducing, so it lands in the neutral "gone" bucket; only an
+    # explicit sign-off puts a finding in `verified`.
+    assert [x["summary"] for x in upd["absent"]] == ["B"]
+    assert upd["verified"] == []
     assert [x["summary"] for x in upd["new"]] == ["C"]
     assert [x["summary"] for x in upd["still_open"]] == ["A"]
 

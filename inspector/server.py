@@ -19,8 +19,14 @@ from .assertions import Assertion, AssertionKind, evaluate_assertions, summarize
 from .config import Config
 from .findings import build_finding, build_repro_spec
 from .models import ActionType, SessionState, Severity, Surface
-from .plan import ScenarioStatus, build_plan
-from .session import SessionManager
+from .paths import valid_id
+from .plan import ScenarioStatus, build_plan, load_plan, save_plan
+from .session import (
+    SessionManager,
+    observation_channels,
+    summarize_network,
+    supports_network,
+)
 
 CONFIG = Config.from_env()
 MANAGER = SessionManager(CONFIG)
@@ -34,14 +40,35 @@ INSTRUCTIONS = (
     "one-call autonomous run).\n"
     "2. observe(session_id) -> Set-of-Mark screenshot + numbered elements + logs.\n"
     "3. act(session_id, target_id=..., ...) using an element id from observe.\n"
-    "4. check(session_id, expectation) for new runtime errors (failed | unknown); audit_dom for "
-    "deterministic a11y / broken-image / unlabeled-input findings (web/Electron).\n"
-    "5. get_findings(session_id) for evidence-backed results.\n"
+    "4. check_assertions(session_id, assertions) to evaluate typed expectations "
+    "(pass | fail | inconclusive); check(session_id, expectation) for new runtime errors "
+    "(failed | unknown); audit_dom for deterministic a11y / broken-image / unlabeled-input "
+    "findings (web/Electron).\n"
+    "5. report_issue(session_id, summary, assertions=[...]) for anything you SAW that the "
+    "tools missed — those assertions are the finding's oracle, i.e. the CORRECT behavior "
+    "that will pass once the bug is fixed. get_findings(session_id) for evidence-backed "
+    "results.\n"
     "6. stop(session_id) to tear down the sandbox and write the replay (returns a "
     "dashboard link).\n\n"
-    "Fix loop: fix_finding / verify_fix / bug_ledger. Devin auto-fix: fix_with_devin / "
-    "devin_status. Cross-run history: list_runs / get_run and the inspector://sessions "
-    "resources.\n\n"
+    "Fix loop: edit the code, mark the finding with update_finding_status(session_id, "
+    "finding_id, 'fixed'), then verify_fix(session_id, finding_id) — it relaunches the "
+    "app, replays the finding's repro and re-evaluates its oracle (fixed | still_present "
+    "| not_run). Mark it 'verified' once that comes back fixed.\n\n"
+    "Starting conditions: capture_state(session_id[, name]) saves a logged-in session "
+    "(cookies + web storage) to disk and seed_state(session_id, name=...) replays it on "
+    "a later run, so an app behind auth is tested instead of its login form; "
+    "set_viewport(session_id, 375, 812, mobile=true) is how the narrow-viewport checks "
+    "actually run.\n\n"
+    "Repeatable suites: set_plan(session_id, goal, scenarios) SAVES the scenarios under "
+    "the app's repo, so run_plan(repo_path, plan_id) re-walks that exact suite on a later "
+    "build (list_plans / get_plan to find it) and every scenario keeps its per-run "
+    "history — which is what makes a regression visible instead of just a fresh opinion.\n\n"
+    "The default `core` profile exposes 16 tools; INSPECTOR_PROFILE=full adds the other "
+    "16: fix_finding / bug_ledger, the dashboard (open_dashboard / build_dashboard), "
+    "cross-run history (list_runs / get_run), test plans (set_plan / update_scenario / "
+    "test_report / list_plans / get_plan / run_plan), test_app_parallel / test_feature, "
+    "and Devin auto-fix (fix_with_devin / devin_status). The inspector://sessions "
+    "resources are always available.\n\n"
     "Setup: only REPLICATE_API_TOKEN (the detector) is required; E2B is optional. Host "
     "execution is refused over the HTTP transport without INSPECTOR_ALLOW_UNSAFE_LOCAL."
 )
@@ -58,17 +85,25 @@ DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorl
 # EXTERNAL = reaches a third-party service (Devin) and records its result — not read-only.
 EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
 
-# Default 'core' tool surface (INSPECTOR_PROFILE=core). The rest are advanced/admin
-# tools, hidden unless INSPECTOR_PROFILE=full.
+# Default 'core' tool surface (INSPECTOR_PROFILE=core). It has to carry the whole
+# find -> fix -> re-verify loop the server is for, so update_finding_status and
+# verify_fix are core: without them an agent can file a finding and then has no way
+# to ever close it. The rest are advanced/admin tools, hidden unless
+# INSPECTOR_PROFILE=full — fix_finding only re-serves finding data get_findings
+# already returned, and bug_ledger is cross-run reporting, not part of the loop.
+# set_viewport / capture_state / seed_state are core for the same reason: almost every
+# real application is behind a login and has a phone layout, so without them the default
+# profile can only test the logged-out desktop shell of the app it was pointed at.
 CORE_TOOLS = frozenset({
     "launch_app", "launch_status", "observe", "act", "check", "audit_dom",
     "report_issue", "get_findings", "stop", "test_app", "check_assertions",
+    "update_finding_status", "verify_fix", "set_viewport", "capture_state", "seed_state",
 })
 ADVANCED_TOOLS = frozenset({
-    "update_finding_status", "open_dashboard", "build_dashboard", "list_runs",
-    "get_run", "fix_finding", "verify_fix", "bug_ledger", "fix_with_devin",
-    "devin_status", "test_app_parallel", "test_feature", "set_plan",
-    "update_scenario", "test_report",
+    "open_dashboard", "build_dashboard", "list_runs", "get_run", "fix_finding",
+    "bug_ledger", "fix_with_devin", "devin_status", "test_app_parallel",
+    "test_feature", "set_plan", "update_scenario", "test_report",
+    "list_plans", "get_plan", "run_plan",
 })
 
 def _apply_profile() -> None:
@@ -314,6 +349,7 @@ class SessionResult(TypedDict, total=False):
 class ObserveResult(TypedDict, total=False):
     elements: list[dict]
     logs_since_last: list[str]
+    network: dict
     state: str
     image_omitted: str
 
@@ -321,6 +357,7 @@ class ObserveResult(TypedDict, total=False):
 class ActResult(TypedDict, total=False):
     changed: bool
     logs: list[str]
+    network: dict
 
 
 class CheckResult(TypedDict, total=False):
@@ -344,10 +381,33 @@ class ReportIssueResult(TypedDict, total=False):
     total_findings: int
 
 
+class ViewportResult(TypedDict, total=False):
+    ok: bool
+    width: int
+    height: int
+    mobile: bool
+    note: str
+    error: str
+
+
+class StateResult(TypedDict, total=False):
+    ok: bool
+    origin: str
+    cookies: int
+    local_storage_keys: int
+    session_storage_keys: int
+    saved_as: str
+    seeded_from: str
+    note: str
+    error: str
+
+
 class AuditResult(TypedDict, total=False):
     axe_violations: list
     broken_images: list
     unlabeled_inputs: list
+    axe_ran: bool
+    axe_error: str
     new_findings: list[str]
     total_findings: int
 
@@ -463,6 +523,13 @@ def observe(session_id: str, include_image: bool = True) -> ObserveResult:
     as `target_id` to `act`. Each element carries its id/label/role/bbox, so you can
     ground from the text list alone. Set `include_image=false` (or hit the per-session
     image cap) to get text only and save host tokens.
+
+    `network` is the HTTP traffic since the previous call, on the surfaces that can see
+    it (web/Electron): every request that failed or answered 4xx/5xx listed worst-first,
+    and the successful remainder reduced to counts — a broken API is usually invisible in
+    both the screenshot and the console. The key is absent on surfaces with no such
+    channel, which is NOT the same as an empty one. Failed requests and 5xx responses are
+    also filed as findings automatically; see `get_findings`.
     """
     session = MANAGER.get(session_id)
     som, elements, logs = session.observe()
@@ -471,10 +538,28 @@ def observe(session_id: str, include_image: bool = True) -> ObserveResult:
         "logs_since_last": logs,
         "state": session.record.state.value,
     }
+    if supports_network(session.adapter):
+        data["network"] = summarize_network(session.last_network)
     if include_image and session.image_allowed():
         return _result(Image(data=som, format="png"), data)
     data["image_omitted"] = "text-only (set include_image=true or raise max_images_per_session)"
     return data
+
+
+def _action_type(name: str) -> ActionType:
+    """Parse the `act` tool's `type` argument, naming the alternatives when it's wrong.
+
+    The bare enum error ("'clic' is not a valid ActionType") tells the calling agent
+    nothing about what IS valid, so it guesses again; listing the set turns a wasted
+    turn into a corrected one.
+    """
+    try:
+        return ActionType(name)
+    except ValueError:
+        raise ValueError(
+            f"unknown action type {name!r}; valid types are: "
+            f"{', '.join(t.value for t in ActionType)}"
+        ) from None
 
 
 @mcp.tool(annotations=WRITE)
@@ -486,18 +571,39 @@ def act(
     text: str | None = None,
     key: str | None = None,
     coords: list[int] | None = None,
+    to_id: int | None = None,
+    to_coords: list[int] | None = None,
+    direction: str = "down",
+    amount: int = 3,
+    url: str = "",
     include_image: bool = True,
 ) -> ActResult:
     """Perform one action and return the post-action Set-of-Mark image + `changed` + logs.
 
-    `type` is one of: click, double_click, type, scroll, key, wait.
-    Prefer `target_id` (from `observe`) over raw `coords`. The returned image is
-    the screen *after* the action — this is verify-after-act. Set `include_image=false`
-    (or hit the per-session image cap) to get `changed`+logs only and save host tokens.
+    `type` is one of: click, double_click, right_click, hover, type, scroll, drag, key,
+    wait, navigate, back, forward, reload.
+    Prefer `target_id` (from `observe`) over raw `coords`. Extra arguments per type:
+    `text` for type, `key` for key, `direction` ("up"/"down") + `amount` (wheel notches)
+    for scroll, `to_id` OR `to_coords` for the destination of a drag, and `url` for
+    navigate (absolute, or relative to the current page — "#/settings" works too).
+
+    navigate/back/forward/reload are not available on every surface; a surface that
+    cannot perform the action fails the call with the reason instead of quietly doing
+    nothing, so an unchanged screen is never mistaken for a route that rendered fine.
+
+    The returned image is the screen *after* the action — this is verify-after-act. Set
+    `include_image=false` (or hit the per-session image cap) to get `changed`+logs only
+    and save host tokens. `network` is the same bounded traffic summary `observe` returns,
+    for the window this action opened — which is where the request it triggered lands.
     """
     session = MANAGER.get(session_id)
-    som, changed, logs = session.act(ActionType(type), target_id, text, key, coords)
+    som, changed, logs = session.act(
+        _action_type(type), target_id, text, key, coords,
+        to_id=to_id, to_coords=to_coords, direction=direction, amount=amount, url=url,
+    )
     data = {"changed": changed, "logs": logs}
+    if supports_network(session.adapter):
+        data["network"] = summarize_network(session.last_network)
     if include_image and session.image_allowed():
         return _result(Image(data=som, format="png"), data)
     data["image_omitted"] = "text-only (set include_image=true or raise max_images_per_session)"
@@ -547,35 +653,18 @@ def check(session_id: str, expectation: str) -> CheckResult:
 
 
 def _assertion_context(session, parsed: list[Assertion]) -> dict:
-    """Gather the observation channels the assertions need: visible text, elements,
-    the current URL (CDP surfaces), and control-state for any referenced elements."""
-    _som, elements, _logs = session.observe()
-    texts = [e.label for e in elements if e.label]
-    try:
-        texts += [t.label for t in session.adapter.text_elements() if t.label]
-    except Exception:
-        pass
-    el_dicts = [{"label": e.label, "role": e.role} for e in elements]
-    url = None
-    cdp = getattr(session.adapter, "cdp", None)
-    if cdp is not None:
-        try:
-            v = cdp.evaluate("window.location.href")
-            url = v.strip('"') if isinstance(v, str) else v
-        except Exception:
-            url = None
-    need = {a.on.lower() for a in parsed
-            if a.kind in (AssertionKind.VALUE, AssertionKind.STATE) and a.on}
-    states: dict = {}
-    if need:
-        for e in elements:
-            lab = (e.label or "").lower()
-            if lab in need and lab not in states:
-                try:
-                    states[lab] = session.adapter.control_state(e.id)
-                except Exception:
-                    pass
-    return {"texts": texts, "elements": el_dicts, "url": url, "states": states}
+    """The channels these assertions need, from the session's own observation.
+
+    This used to be a second, near-identical copy of `Session.observation_context` — one
+    read by `check_assertions`, the other by re-verification — which meant every new
+    channel had to be added twice and an oracle could be judged against a different set
+    of facts here than it was judged against at re-verify time. There is now one gatherer;
+    this only works out which elements need their control state read, since that is the
+    one thing that depends on the assertions rather than on the app.
+    """
+    labels = {a.on for a in parsed
+              if a.kind in (AssertionKind.VALUE, AssertionKind.STATE) and a.on}
+    return observation_channels(session, labels)
 
 
 @mcp.tool(annotations=WRITE)
@@ -586,13 +675,25 @@ def check_assertions(session_id: str, assertions: list[Assertion]) -> Assertions
     Unlike `check` (a runtime-error gate), this actually evaluates expectations. Each
     assertion has {kind, target, op, expected, on}: kind in text | role | value | count
     | url | state | network | screenshot; op in present | absent | equals | contains |
-    gte | lte. A channel that isn't available (network/screenshot, a missing element, no
-    URL on this surface) returns `inconclusive` with a reason, never a false pass.
-    Returns per-assertion results with evidence plus an `overall` verdict.
+    gte | lte. A channel that isn't available (a screenshot baseline, a missing element,
+    no URL or no network tap on this surface) returns `inconclusive` with a reason, never
+    a false pass. Returns per-assertion results with evidence plus an `overall` verdict.
+
+    A `network` assertion matches `target` as a substring of "<METHOD> <url>" over the
+    requests captured since the last observation ("/api/items", or "POST /api/items"),
+    and `expected` against the outcome: a code (500), a class (5xx), "ok" or "failed".
+    So "the save actually reached the server" is `{"kind": "network", "target":
+    "POST /api/save", "expected": "ok"}`, and "nothing 5xx'd" is `{"kind": "network",
+    "expected": "5xx", "op": "absent"}`.
+
+    The set is remembered on the session: any finding filed afterwards inherits it as
+    its re-verification oracle, so a bug caught here is later re-checked by this exact
+    condition rather than by "a similar summary did not reappear".
     """
     session = MANAGER.get(session_id)
     ctx = _assertion_context(session, assertions)
     results = evaluate_assertions(assertions, **ctx)
+    session.last_assertions = list(assertions)
     return {"results": [r.model_dump() for r in results], **summarize(results)}
 
 
@@ -607,6 +708,7 @@ def report_issue(
     suspected_area: str = "",
     repro: list[str] | None = None,
     screenshot_ref: str | None = None,
+    assertions: list[Assertion] = [],
 ) -> ReportIssueResult:
     """File a finding the HOST agent judged from the screenshot (host-as-brain).
 
@@ -614,6 +716,19 @@ def report_issue(
     element, bad copy, an action that silently did nothing. This records a structured
     Finding into the session trace so it shows up in get_findings / test_report /
     the replay alongside the auto-detected ones. severity ∈ low|medium|high|critical.
+
+    `assertions` is this finding's ORACLE, and its direction is the opposite of the one
+    you will reach for first. WRITE THE CORRECT BEHAVIOR — the condition that will PASS
+    once the bug is fixed. Do NOT write the bug, and do NOT write an assertion that
+    passes right now. If the page should show "Saved" but shows nothing, the oracle is
+    [{"kind": "text", "target": "Saved", "op": "present"}] — it FAILS today and PASSES
+    after the fix. Same shape as `check_assertions` (kind / target / op / expected / on).
+
+    It is stored on the finding's ReproSpec, and `verify_fix` replays the repro on the
+    new build and re-evaluates it: oracle passes -> fixed, fails -> still_present,
+    inconclusive -> not_run. Omit it and the finding inherits the last `check_assertions`
+    set from this session; with neither, re-verification degrades to weak summary
+    matching — so pass an oracle whenever you can state one.
     """
     session = MANAGER.get(session_id)
     sev = {s.value: s for s in Severity}.get(severity.lower(), Severity.MEDIUM)
@@ -628,7 +743,7 @@ def report_issue(
         repro=repro or session.action_log[-4:],
         screenshot_refs=[screenshot_ref] if screenshot_ref else [],
     )
-    finding.repro_spec = build_repro_spec(session)
+    finding.repro_spec = build_repro_spec(session, oracle=assertions)
     session.trace.save_finding(finding)
     session.record.findings.append(finding.id)
     return {
@@ -644,10 +759,10 @@ def update_finding_status(session_id: str, finding_id: str, status: str) -> dict
     """Record fix-loop progress on a finding: open | fixed | verified | dismissed.
 
     Mark a finding `fixed` after editing the code, then `verified` once a re-run no
-    longer reproduces it — closing the find → fix → re-verify loop. (Re-verify by
-    re-running the app and checking the signature is gone — e.g. a fresh `test_app`
-    run or `inspector.eval`.) Works on any session on disk, live or long-finished —
-    so the dashboard fix loop can sign off past runs too.
+    longer reproduces it — closing the find → fix → re-verify loop. Re-verify with
+    `verify_fix(session_id, finding_id)` (replays that one finding's repro and re-checks
+    its oracle) or with a fresh `test_app` run. Works on any session on disk, live or
+    long-finished — so the dashboard fix loop can sign off past runs too.
     """
     from .dashboard.aggregate import update_finding_status as _update
     return _update(CONFIG.trace_root, session_id, finding_id, status)
@@ -664,16 +779,173 @@ def audit_dom(session_id: str) -> AuditResult:
     (shows up in get_findings / test_report / the replay). Returns the raw counts.
     No-ops (empty) on surfaces without a DOM. Use this in your accessibility/coverage
     scenarios — it catches what the screenshot can't.
+
+    Check `axe_ran` before reading `axe_violations` as a pass: an empty list means the
+    accessibility pass found nothing ONLY when `axe_ran` is true. If it is false, axe
+    never executed (the app's CSP blocked it, the page navigated mid-audit) and
+    `axe_error` says why — the broken-image and unlabeled-input results are pure DOM
+    and stay trustworthy either way.
     """
     session = MANAGER.get(session_id)
     audit, new_ids = session.audit()
-    return {
+    out: AuditResult = {
         "axe_violations": audit.get("axe_violations", []),
         "broken_images": audit.get("broken_images", []),
         "unlabeled_inputs": audit.get("unlabeled_inputs", []),
+        "axe_ran": bool(audit.get("axe_ran")),
         "new_findings": new_ids,
         "total_findings": len(session.record.findings),
     }
+    if audit.get("axe_error"):
+        out["axe_error"] = str(audit["axe_error"])[:300]
+    return out
+
+
+@mcp.tool(annotations=WRITE)
+@_friendly
+def set_viewport(session_id: str, width: int, height: int, mobile: bool = False) -> ViewportResult:
+    """Resize the app's viewport — this is what makes the responsive checks executable.
+
+    A run is otherwise stuck at whatever size the app booted with, so "does this work on
+    a phone" (375x812, `mobile=true` for touch emulation) can be planned but never tested.
+    Surfaces that cannot resize say so instead of quietly staying put, because a layout
+    that was never narrowed reads exactly like a layout that survived being narrowed.
+
+    Element ids from the previous `observe` are discarded on success — their coordinates
+    belong to the old size — so call `observe` again before the next `act`.
+    """
+    session = MANAGER.get(session_id)
+    if int(width) <= 0 or int(height) <= 0:
+        return {"ok": False, "error": "width and height must be positive CSS pixels"}
+    if not session.set_viewport(width, height, mobile=mobile):
+        return {
+            "ok": False, "width": width, "height": height, "mobile": mobile,
+            "error": f"{session.record.surface.value} could not resize to "
+                     f"{width}x{height} — this surface has no viewport control",
+        }
+    return {
+        "ok": True, "width": width, "height": height, "mobile": mobile,
+        "note": "viewport changed; element ids from the last observation are stale — "
+                "call observe again before acting",
+    }
+
+
+def _state_path(name: str) -> str:
+    """Resolve a saved-state name to a file under the trace root, refusing traversal.
+
+    `name` is one path segment, validated by the same `valid_id` the dashboard uses for
+    session and finding ids. Taking a path from the caller instead would be an arbitrary
+    file write on the capture side and an arbitrary file read on the seeding side, and
+    this particular tool is the one that handles credentials.
+    """
+    if not valid_id(name):
+        raise ValueError(f"invalid state name {name!r}: letters, digits, '_' and '-' only")
+    return os.path.join(CONFIG.trace_root, "state", f"{name}.json")
+
+
+def _write_state(name: str, state: dict) -> str:
+    """Persist a captured session owner-only — this is a credential file, not a report."""
+    path = _state_path(name)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f)
+    return path
+
+
+def _state_summary(state: dict) -> dict:
+    """Describe a state by its SHAPE only — origin and counts, never a value.
+
+    Cookie values and storage entries are session tokens. Everything a tool returns is
+    written into the host agent's transcript and read back by a model, so this is the
+    only description of a state that ever crosses the boundary.
+    """
+    return {
+        "origin": str(state.get("origin") or ""),
+        "cookies": len(state.get("cookies") or []),
+        "local_storage_keys": len(state.get("local_storage") or {}),
+        "session_storage_keys": len(state.get("session_storage") or {}),
+    }
+
+
+def _has_state(state: dict) -> bool:
+    return bool(state.get("cookies") or state.get("local_storage")
+                or state.get("session_storage"))
+
+
+@mcp.tool(annotations=WRITE)
+@_friendly
+def capture_state(session_id: str, name: str = "default") -> StateResult:
+    """Save the app's CURRENT session (cookies + web storage) for later runs to replay.
+
+    Log in once — by hand or by driving the form — then call this. Every later run can
+    `seed_state(session_id, name=...)` and start authenticated instead of spending a
+    third of its step budget on the login UI before it reaches the feature you built.
+
+    The state is written to `<trace_root>/state/<name>.json`, owner-readable only. It is
+    NOT returned: what comes back is the origin and how many cookies / storage keys were
+    captured, because the contents are session credentials and everything a tool returns
+    ends up in the transcript. `name` is a plain identifier, not a path.
+    """
+    session = MANAGER.get(session_id)
+    try:
+        _state_path(name)  # validate before doing any work
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    state = session.capture_state()
+    if not _has_state(state):
+        return {
+            "ok": False,
+            "error": f"nothing to capture on {session.record.surface.value}: no cookies "
+                     "or web storage (either the surface has no session channel, or the "
+                     "app is not logged in yet)",
+        }
+    _write_state(name, state)
+    return {
+        "ok": True, "saved_as": name, **_state_summary(state),
+        "note": f"replay it on a later run with seed_state(session_id, name={name!r})",
+    }
+
+
+@mcp.tool(annotations=WRITE)
+@_friendly
+def seed_state(session_id: str, state: dict | None = None, name: str = "") -> StateResult:
+    """Install a captured session so the run starts logged in, before you test anything.
+
+    Pass `name` to replay a state saved by `capture_state`, or `state` to pass one inline
+    (the dict `capture_state` produced; inline wins if you pass both). The cookies are
+    placed, the app is sent to the state's origin, web storage is written and the app is
+    reloaded so it boots having read it — `ok=false` means that sequence did not complete
+    and the app is still logged out, which is worth knowing BEFORE you read every guarded
+    screen that follows as a bug.
+
+    The state is credentials: it is never logged, never written into the trace or the
+    repro steps, and never echoed back — the result describes it by counts only.
+    """
+    session = MANAGER.get(session_id)
+    if state is None and name:
+        try:
+            path = _state_path(name)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        try:
+            with open(path) as f:
+                state = json.load(f)
+        except FileNotFoundError:
+            return {"ok": False, "error": f"no saved state named {name!r} — "
+                                          "run capture_state on a logged-in session first"}
+        except (OSError, ValueError):
+            return {"ok": False, "error": f"saved state {name!r} is unreadable"}
+    if not isinstance(state, dict) or not _has_state(state):
+        return {"ok": False, "error": "pass `state` (from capture_state) or the `name` of "
+                                      "a saved one; an empty state would install nothing"}
+    ok = session.seed_state(state)
+    out = {"ok": ok, "seeded_from": name or "inline", **_state_summary(state)}
+    if not ok:
+        out["error"] = (f"{session.record.surface.value} did not install the session — "
+                        "the surface cannot seed state, or the navigation to its origin "
+                        "was refused; the app is still logged out")
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1092,27 +1364,87 @@ async def test_feature(
 
 # --- agentic test-plan orchestration ---
 
+def _persist_plan(plan) -> str:
+    """Save a plan to the durable per-repo store; '' (logged) when the write fails.
+
+    A failed write must not fail the tool call: the plan is live on the session either
+    way and the run can go on. What it costs is re-runnability, so the caller is told.
+    """
+    try:
+        return save_plan(CONFIG.trace_root, plan, CONFIG.workspace_roots)
+    except (OSError, ValueError, PermissionError):
+        log.warning("could not save plan %s under %s", plan.id, CONFIG.trace_root,
+                    exc_info=True)
+        return ""
+
+
+def _plan_summary(plan) -> dict:
+    """One saved plan as a listing row: what it covers and how it has been doing."""
+    return {
+        "plan_id": plan.id,
+        "goal": plan.goal,
+        "scenario_count": len(plan.scenarios),
+        "runs": len(plan.runs),
+        "totals": plan.totals(),
+        "regressions": [s.title for s in plan.regressions()],
+        "updated_at": plan.updated_at,
+    }
+
+
 @mcp.tool(annotations=WRITE)
 @_friendly
-def set_plan(session_id: str, goal: str, scenarios: list[dict]) -> dict:
-    """Record the overall test plan: the scenarios (app parts/flows/edge cases) to cover.
+def set_plan(session_id: str, goal: str, scenarios: list[dict], plan_id: str = "") -> dict:
+    """Record the test plan — the scenarios to cover — and SAVE it as a re-runnable suite.
 
     Call this after `launch_app` + an initial `observe`, once you've decided what to
     test. Then work the plan scenario-by-scenario. Each scenario is a dict:
-    {title, rationale, steps (list), expected}. You can call `set_plan` again to
-    adapt the plan as you discover features.
+    {title, rationale, steps (list), expected, assertions (optional)}. `assertions` is
+    the scenario's ORACLE, same shape as `check_assertions` — the condition that must
+    hold once its steps have run. Without one, a re-run of the scenario can only report
+    that nothing crashed.
+
+    WRITE THE STEPS SO A MACHINE CAN REPLAY THEM: `click "Save"`, `type "admin@x.com"`,
+    `press "Enter"`, `navigate to "/cart"`. `run_plan` drives exactly these lines against
+    a later build, matching each locator against the live element labels; a step that
+    names no action ("the total should update") is reported as un-walkable rather than
+    guessed at, so put the checks in `assertions` and keep `steps` to actions.
+
+    The plan is written to `<trace_root>/plans/<repo>/` as well as into this run's trace,
+    so `list_plans(repo_path)` and `run_plan(repo_path, plan_id)` can re-run this exact
+    suite after a change instead of re-inventing one. Call `set_plan` again to ADAPT the
+    plan mid-run: it updates the same saved plan, matching scenarios by title so their
+    per-run history survives the rewrite. Pass `plan_id` to update a specific saved plan.
     """
     session = MANAGER.get(session_id)
-    session.plan = build_plan(session.record.id, goal, scenarios)
-    session.trace.save_plan(session.plan)
-    return {
-        "plan_id": session.plan.id,
+    repo = session.record.repo_path
+    first_call = session.plan is None
+    target = plan_id or ("" if first_call else session.plan.id)
+    prior = load_plan(CONFIG.trace_root, repo, target, CONFIG.workspace_roots) if target else None
+    plan = build_plan(session.record.id, goal, scenarios, repo_path=repo, plan_id=target)
+    if prior is not None:
+        plan.adopt_history(prior)
+    if first_call:
+        # A new run of this suite: carry the history forward, but nothing is done yet.
+        plan.begin_run(session.record.id)
+    elif session.record.id not in plan.runs:
+        plan.runs.append(session.record.id)
+    session.plan = plan
+    session.trace.save_plan(plan)
+    saved = _persist_plan(plan)
+    out = {
+        "plan_id": plan.id,
+        "saved": bool(saved),
+        "runs": len(plan.runs),
         "scenarios": [
             {"id": s.id, "title": s.title, "status": s.status.value}
-            for s in session.plan.scenarios
+            for s in plan.scenarios
         ],
         "next": "Work each scenario: observe → act → verify → update_scenario.",
     }
+    if not saved:
+        out["save_error"] = ("the plan is live on this session but could not be written to "
+                             f"{CONFIG.trace_root} — it will not be re-runnable later")
+    return out
 
 
 @mcp.tool(annotations=WRITE)
@@ -1128,6 +1460,10 @@ def update_scenario(
 
     status ∈ passed | failed | skipped | blocked. Attach any finding ids
     (from `get_findings`) that this scenario surfaced.
+
+    The outcome is appended to the scenario's history in the saved plan, so a later
+    `get_plan` / `run_plan` can show that this scenario used to pass — a regression is
+    only visible if the previous verdicts were kept.
     """
     session = MANAGER.get(session_id)
     if session.plan is None:
@@ -1135,15 +1471,15 @@ def update_scenario(
     scenario = session.plan.get(scenario_id)
     if scenario is None:
         return {"error": f"unknown scenario {scenario_id!r}"}
-    scenario.status = ScenarioStatus(status)
-    scenario.notes = notes
-    if finding_ids:
-        scenario.finding_ids = finding_ids
+    scenario.record_run(ScenarioStatus(status), session_id=session.record.id, notes=notes,
+                        finding_ids=finding_ids)
     session.trace.save_plan(session.plan)
+    _persist_plan(session.plan)
     pending = session.plan.pending()
     return {
         "ok": True,
         "remaining": len(pending),
+        "regressed": scenario.regressed(),
         "next_pending": [{"id": s.id, "title": s.title} for s in pending[:5]],
     }
 
@@ -1161,10 +1497,94 @@ def test_report(session_id: str) -> dict:
     return {
         "goal": session.plan.goal,
         "totals": totals,
+        "plan_id": session.plan.id,
         "scenarios": [s.model_dump() for s in session.plan.scenarios],
+        "regressions": [s.title for s in session.plan.regressions()],
         "total_findings": len(session.record.findings),
         **_dashboard_links(session_id),  # clickable localhost link to this run's replay
     }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_plans(repo_path: str) -> dict:
+    """The saved test plans for one app — the suites you can re-run against a new build.
+
+    Most recently updated first, each with its scenario count, how many runs it has, the
+    current verdict per status, and any scenario that used to pass and no longer does.
+    Take a `plan_id` from here to `run_plan(repo_path, plan_id)` to walk it again, or to
+    `get_plan(plan_id)` for the scenarios and their full per-run history.
+    """
+    from .plan import list_plans as _list_saved_plans
+
+    try:
+        plans = _list_saved_plans(CONFIG.trace_root, repo_path, CONFIG.workspace_roots)
+    except PermissionError as exc:
+        return {"error": str(exc)}
+    return {
+        "repo_path": repo_path,
+        "total": len(plans),
+        "plans": [_plan_summary(p) for p in plans],
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_plan(plan_id: str) -> dict:
+    """One saved plan in full: every scenario, its current status, and its run history.
+
+    `history` on a scenario is one row per run of the plan (session, verdict, notes,
+    findings), oldest first — read it to see whether a failing scenario is newly broken
+    or has never worked, which is the difference between a regression and a known gap.
+    """
+    from .plan import find_plan
+
+    plan = find_plan(CONFIG.trace_root, plan_id)
+    if plan is None:
+        return {"error": f"no saved plan {plan_id!r} — call list_plans(repo_path) to see "
+                         "what is saved for an app"}
+    return {
+        **_plan_summary(plan),
+        "repo_path": plan.repo_path,
+        "created_at": plan.created_at,
+        "scenarios": [s.model_dump() for s in plan.scenarios],
+    }
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def run_plan(
+    repo_path: str,
+    plan_id: str,
+    surface: str | None = None,
+    dev_command: str | None = None,
+    ctx: Context = None,
+) -> dict:
+    """RE-RUN a saved plan against the current build — "re-run my checkout suite" in one call.
+
+    Launches the app and walks every scenario of the saved plan: it replays the scenario's
+    written steps by element label, evaluates its `assertions` oracle, and records the
+    verdict onto that scenario's history, then tears the app down and returns the replay
+    link. Because the scenarios are the SAME ones as last time, the result is comparable:
+    `regressions` lists every scenario that used to pass and just failed.
+
+    A scenario whose steps no longer replay comes back `blocked` with the step it stopped
+    at — its own steps have gone from the UI — never as a pass. Use `list_plans(repo_path)`
+    to find the plan_id, and `set_plan` on a live session to author or adapt one.
+    """
+    from .plan import run_plan as _run_saved_plan
+
+    surf = Surface(surface) if surface else None
+    await _say(ctx, f"Re-running plan {plan_id} against {repo_path}…", 5)
+    try:
+        result = await _run_with_heartbeat(
+            ctx, "Re-running the plan",
+            lambda: _run_saved_plan(CONFIG, repo_path, plan_id, surf, dev_command),
+        )
+    except PermissionError as exc:
+        return {"status": "not_run", "plan_id": plan_id, "error": str(exc)}
+    if result.get("session_id"):
+        result.update(_dashboard_links(result["session_id"]))
+    totals = result.get("totals") or {}
+    await _say(ctx, f"plan {result.get('status', 'not_run')}: {totals}", 100)
+    return result
 
 
 @mcp.prompt
@@ -1182,14 +1602,15 @@ Target: `{repo_path}`  ·  Goal: {goal}
    • **Round 1 — Functional:** the core user flows (action → expected result).
    • **Round 2 — Adversarial:** re-examine Round 1 for what could BREAK it — error paths, empty states, race conditions (rapid double-submit), edge inputs (empty, invalid, 500+ chars, special/unicode, `<script>`/SQL injection), and different roles.
    • **Round 3 — Coverage:** accessibility (`audit_dom`), keyboard-only nav, a bogus route (404), narrow/mobile viewport, console errors, visual consistency.
-   Dedupe across the three rounds into 4–8 scenarios. Each: {{title, rationale, steps, expected}}.
+   Dedupe across the three rounds into 4–8 scenarios. Each: {{title, rationale, steps, expected, assertions}}.
+   The plan is SAVED under the repo and can be re-run later, so write `steps` as replayable actions (`click "Save"`, `type "admin@x.com"`, `press "Enter"`, `navigate to "/cart"`) and put the check itself in `assertions` (same shape as `check_assertions`) — that is what makes the suite comparable across runs instead of re-invented each time.
 4. For each PENDING scenario, run the inner loop:
    a. `observe()` to see the current state.
    b. Decide the next action from the numbered image + element list, **preferring the adversarial move over the happy path**, then `act(...)`. Re-observe after each action (verify-after-act).
    c. After the key action, `check(expectation=...)` and `get_findings(...)`. For web/Electron, call `audit_dom()` to collect deterministic a11y / broken-image / unlabeled-input findings the screenshot can't show.
    d. `update_scenario(scenario_id, status=passed|failed|..., notes=..., finding_ids=[...])`.
    e. If you discover new features mid-run, call `set_plan` again to ADAPT the plan.
-5. When no PENDING scenarios remain, `report_issue(...)` anything you SAW that the log tap missed, then `test_report()` and summarize: what passed/failed, the findings (with file:line where available), and recommended fixes. **Finish by giving the user the `dashboard_url` from the result as a clickable link** so they can replay the run and inspect every bug the agent surfaced.
+5. When no PENDING scenarios remain, `report_issue(...)` anything you SAW that the log tap missed, then `test_report()` and summarize (tell the user the `plan_id`: `run_plan(repo_path, plan_id)` re-walks this exact suite after their next change): what passed/failed, the findings (with file:line where available), and recommended fixes. **Finish by giving the user the `dashboard_url` from the result as a clickable link** so they can replay the run and inspect every bug the agent surfaced.
 
 ADVERSARIAL MOVES TO TRY (consult per element type):
 {catalog_text()}

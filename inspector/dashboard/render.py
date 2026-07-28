@@ -83,6 +83,10 @@ tbody tr.hl{background:rgba(21,199,141,.12);box-shadow:inset 3px 0 0 var(--green
   padding:1px 7px;border:1px solid currentColor;border-radius:2px;text-transform:uppercase}
 .st-open{color:var(--red)} .st-verified{color:var(--green)}
 .st-fixed{color:var(--sev-medium)} .st-dismissed{color:var(--muted-2)}
+.st-absent{color:var(--sev-low)} .st-fixing{color:var(--sev-high)}
+.st-not_run{color:var(--muted);border-style:dashed}
+.ev{margin-top:5px;color:var(--faint);font-family:var(--font-mono);font-size:10px;
+  max-width:220px;line-height:1.4;white-space:normal}
 """
 
 
@@ -186,10 +190,15 @@ def _update_panel(update: dict) -> str:
                 + "</div></div>")
 
     ver, new, op = update.get("verified", []), update.get("new", []), update.get("still_open", [])
+    # `absent` gets its own neutral card: it did not come back, but nobody signed it off,
+    # so it must not sit under the green "fixed" count.
+    absent = update.get("absent", [])
     return (
         "<div class='update'>"
         f"<div class='ucard good'><div class='n'>{len(ver)}</div>"
-        f"<div class='label'>fixed since last run</div>{_list(ver)}</div>"
+        f"<div class='label'>verified fixed since last run</div>{_list(ver)}</div>"
+        f"<div class='ucard'><div class='n'>{len(absent)}</div>"
+        f"<div class='label'>gone, not verified</div>{_list(absent)}</div>"
         f"<div class='ucard bad'><div class='n'>{len(new)}</div>"
         f"<div class='label'>new this run</div>{_list(new)}</div>"
         f"<div class='ucard'><div class='n'>{len(op)}</div>"
@@ -215,15 +224,22 @@ def _fix_cell(g: dict) -> str:
 
 
 def _ledger_table(ledger: list[dict]) -> str:
-    """Every unique issue with its current evidence-based status + a Devin fix action."""
+    """Every unique issue with its current evidence-based status + a Devin fix action.
+
+    The status badge always sits above its `evidence` phrase: only `verified` is green,
+    so the reader can see at a glance which rows are proven and which merely didn't
+    reproduce, without having to know the vocabulary.
+    """
     if not ledger:
         return "<div class='empty'>No issues recorded yet.</div>"
     rows = []
     for g in ledger:
         st = g.get("status", "open")
+        ev = g.get("evidence") or ""
         rows.append(
             "<tr>"
-            f"<td><span class='st st-{_e(st)}'>{_e(st)}</span></td>"
+            f"<td><span class='st st-{_e(st)}'>{_e(st.replace('_', ' '))}</span>"
+            + (f"<div class='ev'>{_e(ev)}</div>" if ev else "") + "</td>"
             f"<td><span class='sev-badge sev-{_e(g.get('severity', 'low'))}'>"
             f"{_e(g.get('severity', ''))}</span></td>"
             f"<td><div class='goal'>{_e(g.get('summary', ''))}</div>"

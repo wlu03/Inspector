@@ -6,7 +6,9 @@ import os
 
 from inspector.dashboard.aggregate import (
     aggregate_stats,
+    bug_ledger,
     fix_prompt,
+    latest_update,
     load_session_detail,
     recurring_findings,
     scan_sessions,
@@ -130,6 +132,108 @@ def test_load_session_detail_attaches_fix_prompts(tmp_path):
     assert len(detail["actions"]) == 2
 
 
+# --- bug ledger honesty ------------------------------------------------------
+# The ledger is the screen someone reads to decide "am I done?", so these tests pin the
+# one property that matters: green means evidence, never just "the run didn't mention it".
+
+def _by_summary(root):
+    return {g["summary"]: g for g in bug_ledger(str(root))}
+
+
+def test_ledger_short_latest_run_does_not_verify_a_missing_bug(tmp_path):
+    # a 10-action run found the bug; the latest run poked at the app for 2 actions and
+    # found something else entirely — it never went looking, so it proves nothing.
+    _mk_session(tmp_path, "ses_long", "2026-06-01T10:00:00", "web", False,
+                [_finding("fnd_a", "Save button does nothing")], n_actions=10)
+    _mk_session(tmp_path, "ses_short", "2026-06-02T10:00:00", "web", False,
+                [_finding("fnd_b", "Header misaligned")], n_actions=2)
+    g = _by_summary(tmp_path)
+    assert g["Save button does nothing"]["status"] == "not_run"
+    assert "2 actions" in g["Save button does nothing"]["evidence"]
+    assert g["Header misaligned"]["status"] == "open"       # it did reproduce
+
+
+def test_ledger_latest_run_with_no_findings_is_not_run(tmp_path):
+    _mk_session(tmp_path, "ses_a", "2026-06-01T10:00:00", "web", False,
+                [_finding("fnd_a", "Save button does nothing")], n_actions=6)
+    _mk_session(tmp_path, "ses_b", "2026-06-02T10:00:00", "web", True, [], n_actions=6)
+    [g] = bug_ledger(str(tmp_path))
+    assert g["status"] == "not_run"
+    assert "no findings" in g["evidence"]
+
+
+def test_ledger_comparable_run_that_misses_a_bug_reads_absent_not_verified(tmp_path):
+    # the latest run did the same amount of work and the bug didn't come back. Suggestive
+    # — but nobody signed it off, so it is `absent`, not green.
+    _mk_session(tmp_path, "ses_a", "2026-06-01T10:00:00", "web", False,
+                [_finding("fnd_a", "Save button does nothing"),
+                 _finding("fnd_b", "Header misaligned")], n_actions=6)
+    _mk_session(tmp_path, "ses_b", "2026-06-02T10:00:00", "web", False,
+                [_finding("fnd_b2", "Header misaligned")], n_actions=6)
+    g = _by_summary(tmp_path)
+    assert g["Save button does nothing"]["status"] == "absent"
+    assert g["Save button does nothing"]["status"] != "verified"
+    assert "never signed off" in g["Save button does nothing"]["evidence"]
+    assert g["Header misaligned"]["status"] == "open"
+
+
+def test_ledger_verified_only_after_explicit_sign_off(tmp_path):
+    _mk_session(tmp_path, "ses_a", "2026-06-01T10:00:00", "web", False,
+                [_finding("fnd_a", "Save button does nothing")], n_actions=6)
+    _mk_session(tmp_path, "ses_b", "2026-06-02T10:00:00", "web", False,
+                [_finding("fnd_b", "Header misaligned")], n_actions=6)
+    assert _by_summary(tmp_path)["Save button does nothing"]["status"] == "absent"
+    update_finding_status(str(tmp_path), "ses_a", "fnd_a", "verified")
+    g = _by_summary(tmp_path)["Save button does nothing"]
+    assert g["status"] == "verified"
+    assert "signed off" in g["evidence"]
+
+
+def test_ledger_sign_off_on_the_latest_run_still_reads_verified(tmp_path):
+    # signed off inside the only run there is: the sign-off is the evidence, and the
+    # finding's presence is just the record it was signed off on.
+    _mk_session(tmp_path, "ses_a", "2026-06-01T10:00:00", "web", False,
+                [_finding("fnd_a", "Save button does nothing")], n_actions=6)
+    assert bug_ledger(str(tmp_path))[0]["status"] == "open"
+    update_finding_status(str(tmp_path), "ses_a", "fnd_a", "verified")
+    [g] = bug_ledger(str(tmp_path))
+    assert g["status"] == "verified" and "latest run" in g["evidence"]
+
+
+def test_ledger_reproducing_again_overrides_an_old_sign_off(tmp_path):
+    # signed off in the old run, back in the latest one → open. Evidence beats paperwork.
+    _mk_session(tmp_path, "ses_a", "2026-06-01T10:00:00", "web", False,
+                [_finding("fnd_a", "Save button does nothing", status="verified")], n_actions=6)
+    _mk_session(tmp_path, "ses_b", "2026-06-02T10:00:00", "web", False,
+                [_finding("fnd_b", "Save button does nothing")], n_actions=6)
+    [g] = bug_ledger(str(tmp_path))
+    assert g["status"] == "open" and "reproduced" in g["evidence"]
+
+
+def test_ledger_sorts_open_then_unproven_then_verified(tmp_path):
+    _mk_session(tmp_path, "ses_a", "2026-06-01T10:00:00", "web", False,
+                [_finding("fnd_a", "Still broken"), _finding("fnd_b", "Quietly gone"),
+                 _finding("fnd_c", "Actually checked")], n_actions=6)
+    _mk_session(tmp_path, "ses_b", "2026-06-02T10:00:00", "web", False,
+                [_finding("fnd_a2", "Still broken")], n_actions=6)
+    update_finding_status(str(tmp_path), "ses_a", "fnd_c", "verified")
+    assert [g["status"] for g in bug_ledger(str(tmp_path))] == ["open", "absent", "verified"]
+
+
+def test_latest_update_splits_verified_from_merely_absent(tmp_path):
+    _mk_session(tmp_path, "ses_old", "2026-06-01T10:00:00", "web", False,
+                [_finding("fnd_a", "Checked and fixed"), _finding("fnd_b", "Just vanished")],
+                n_actions=6)
+    _mk_session(tmp_path, "ses_new", "2026-06-02T10:00:00", "web", False,
+                [_finding("fnd_c", "Brand new bug")], n_actions=6)
+    update_finding_status(str(tmp_path), "ses_old", "fnd_a", "verified")
+    upd = latest_update(str(tmp_path))
+    assert [x["summary"] for x in upd["verified"]] == ["Checked and fixed"]
+    assert [x["summary"] for x in upd["absent"]] == ["Just vanished"]
+    assert [x["summary"] for x in upd["new"]] == ["Brand new bug"]
+    assert upd["still_open"] == []
+
+
 # --- render + build ----------------------------------------------------------
 
 def test_render_index_uses_theme_and_shows_runs(tmp_path):
@@ -141,6 +245,29 @@ def test_render_index_uses_theme_and_shows_runs(tmp_path):
     assert "ses_a" in htmlout and "Recurring across runs" in htmlout
     assert "sev-critical" in htmlout
     assert "id='ses_a'" in htmlout and "highlightHash" in htmlout   # deep-link target + handler
+
+
+def test_render_ledger_shows_unproven_statuses_with_their_evidence():
+    ledger = [
+        {"signature": "s1", "summary": "Save broken", "severity": "high", "status": "open",
+         "evidence": "reproduced in the latest run ses_b", "occurrences": 2,
+         "sessions": ["a", "b"]},
+        {"signature": "s2", "summary": "Quietly gone", "severity": "high", "status": "absent",
+         "evidence": "did not reappear in the latest run, never signed off",
+         "occurrences": 1, "sessions": ["a"]},
+        {"signature": "s3", "summary": "Never looked", "severity": "low", "status": "not_run",
+         "evidence": "latest run recorded no findings at all", "occurrences": 1,
+         "sessions": ["a"]},
+    ]
+    update = {"has_prev": True, "verified": [], "absent": [{"summary": "Quietly gone"}],
+              "new": [], "still_open": [{"summary": "Save broken"}]}
+    stats = {"n_sessions": 2, "findings_total": 3, "by_severity": {}, "pass_rate": None}
+    htmlout = render_index([], stats, [], ledger=ledger, update=update)
+    assert "st-absent" in htmlout and "st-not_run" in htmlout   # distinct status classes
+    assert ">not run<" in htmlout                                # underscore humanised
+    assert "never signed off" in htmlout                         # evidence is shown
+    assert "gone, not verified" in htmlout                       # absent kept out of "fixed"
+    assert ".st-absent{color:var(--sev-low)}" in htmlout         # distinct styling
 
 
 def test_build_dashboard_writes_files_and_replays(tmp_path):

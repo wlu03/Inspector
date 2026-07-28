@@ -4,7 +4,7 @@
 ![MCP](https://img.shields.io/badge/protocol-MCP-6f42c1.svg)
 ![Surfaces](https://img.shields.io/badge/surfaces-web%20%7C%20electron%20%7C%20android%20%7C%20ios-0aa.svg)
 ![Status](https://img.shields.io/badge/status-building-orange.svg)
-![Tests](https://img.shields.io/badge/tests-100%2B-green.svg)
+![Tests](https://img.shields.io/badge/tests-passing-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **An MCP server that lets your coding agent see, click, and test the app it just built, then hand back reproducible findings so it can fix bugs on its own. Works on web, Electron, Android, and iOS.**
@@ -37,7 +37,7 @@ Inspector plugs into Claude Code, Cursor, or any MCP coding agent. It spins up a
 
 ## Status
 
-Web is live and proven end to end. Pure-Python core with 13+ MCP tools, `audit_dom`, adversarial planning, and findings plus replay (100+ tests). Electron is one refactor out; Android and iOS adapters are in progress. All four surfaces are in scope as a personal dev tool (no hosting or payments yet).
+Web is live and proven end to end. Pure-Python core with 32 MCP tools — 16 exposed by default under the `core` profile, the remaining 16 advanced and admin tools unlocked with `INSPECTOR_PROFILE=full` — plus `audit_dom`, adversarial planning, and findings plus replay, all covered by the unit suite (`pytest -q`). Electron is one refactor out; Android and iOS adapters are in progress. All four surfaces are in scope as a personal dev tool (no hosting or payments yet).
 
 ## Quickstart
 
@@ -55,7 +55,7 @@ pytest -q                   # unit tests
 inspector/     # core plus adapters (web, electron, android, ios) plus perception
 infra/         # how each VM is provisioned
 examples/      # one buggy sample app per surface
-docs/          # design docs 01 through 13
+docs/          # design docs 01 through 16
 scripts/       # run helpers, doctor, probes
 ```
 

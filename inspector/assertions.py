@@ -3,12 +3,16 @@
 An Assertion is a machine-checkable claim about the current observation: text, role,
 value, count, URL, accessibility state, network, or a screenshot region. Each evaluates
 to pass / fail / inconclusive **with evidence**. Channels that aren't available on the
-surface (or aren't implemented yet, e.g. network/screenshot) return `inconclusive` with
-a reason rather than silently passing, so a green result always means a real check ran.
+surface (or aren't implemented yet, e.g. the screenshot baseline) return `inconclusive`
+with a reason rather than silently passing, so a green result always means a real check
+ran. That is the whole contract of this module, and it is why "the channel saw nothing"
+and "the channel does not exist here" are kept scrupulously apart — the first is a real
+observation that can pass or fail an assertion, the second can only ever be inconclusive.
 """
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 from pydantic import BaseModel
@@ -21,7 +25,7 @@ class AssertionKind(str, Enum):
     COUNT = "count"        # number of elements matching `target`
     URL = "url"            # the current URL contains/equals `target`
     STATE = "state"        # a11y state (`target`, e.g. checked) of element `on`
-    NETWORK = "network"    # a request matching `target` returned `expected` (needs capture)
+    NETWORK = "network"    # a request matching `target` returned `expected`
     SCREENSHOT = "screenshot"  # a screenshot region matches a baseline (needs baseline)
 
 
@@ -68,6 +72,74 @@ def _matches(el: dict, target: str) -> bool:
     return t in el.get("label", "").lower() or el.get("role", "").lower() == t
 
 
+_STATUS_CLASS = re.compile(r"([1-5])xx")
+_HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
+
+
+def _request_matches(rec: dict, target: str) -> bool:
+    """Whether one captured request is the one the assertion is talking about.
+
+    `target` is a substring of the URL, optionally prefixed by a method — enough to say
+    the useful things without inventing a matcher language. "/api/items" picks the
+    endpoint whatever host it is on, a full URL pins it exactly, "POST /api/items"
+    separates the write from the read of the same route, and an empty target means every
+    request, so "nothing anywhere 5xx'd" is expressible.
+    """
+    t = (target or "").strip().lower()
+    if not t:
+        return True
+    method = str(rec.get("method") or "").lower()
+    url = str(rec.get("url") or "").lower()
+    if t in _HTTP_METHODS:
+        return method == t
+    verb, _, rest = t.partition(" ")
+    if verb in _HTTP_METHODS and rest.strip():
+        return method == verb and rest.strip() in url
+    return t in url
+
+
+def _status_token(expected) -> str | None:
+    """Normalize `expected` into a status matcher, or None if it isn't one.
+
+    Accepts an exact code (500, "404"), a class ("5xx"), or the two outcomes a caller
+    naturally reaches for: "ok" (any 2xx/3xx) and "failed" (the request never completed).
+    Anything else is a malformed assertion rather than a false one, and the caller is
+    told so — silently failing an unreadable expectation would look exactly like a bug
+    in the app.
+    """
+    want = str(expected).strip().lower()
+    if want in ("ok", "success", "failed", "error"):
+        return want
+    if _STATUS_CLASS.fullmatch(want):
+        return want
+    if want.isdigit() and 100 <= int(want) <= 599:
+        return want
+    return None
+
+
+def _status_matches(rec: dict, want: str) -> bool:
+    status = rec.get("status")
+    if want in ("failed", "error"):
+        return bool(rec.get("failed"))
+    if want in ("ok", "success"):
+        return isinstance(status, int) and 200 <= status < 400
+    if not isinstance(status, int):
+        return False  # never completed: it matches no status code, only "failed"
+    m = _STATUS_CLASS.fullmatch(want)
+    return status // 100 == int(m.group(1)) if m else status == int(want)
+
+
+def _describe_request(rec: dict) -> str:
+    """One request as evidence: `GET /api/items 500`, or the error it died with."""
+    if rec.get("failed"):
+        outcome = str(rec.get("error") or "failed")[:80]
+    elif isinstance(rec.get("status"), int):
+        outcome = str(rec["status"])
+    else:
+        outcome = "pending"
+    return f"{rec.get('method') or 'GET'} {str(rec.get('url') or '')[:120]} {outcome}"
+
+
 def _cmp_num(actual: int, expected, op: AssertionOp) -> bool:
     try:
         e = int(expected)
@@ -81,8 +153,16 @@ def _cmp_num(actual: int, expected, op: AssertionOp) -> bool:
 
 
 def evaluate_assertion(a: Assertion, *, texts=None, elements=None, url=None,
-                       states=None, network: bool = False,
+                       states=None, network=None,
                        screenshot: bool = False) -> AssertionResult:
+    """Evaluate one assertion against the channels the caller managed to gather.
+
+    `network` is the list of request records drained for this observation (the shape
+    `SurfaceAdapter.network()` returns). Anything that is not a list — None, or the
+    historical False — means the surface has no network tap at all, which is the one
+    case a NETWORK assertion may answer `inconclusive`. An EMPTY list is the opposite:
+    the tap ran and saw no traffic, which is a real finding about the app.
+    """
     texts = texts or []
     elements = elements or []
     states = states or {}
@@ -129,9 +209,35 @@ def evaluate_assertion(a: Assertion, *, texts=None, elements=None, url=None,
         return _res(a, Status.PASS if ok else Status.FAIL, actual=actual,
                     evidence=f"{a.on!r} {key}={actual!r}")
 
-    if a.kind == AssertionKind.NETWORK and not network:
-        return _res(a, Status.INCONCLUSIVE,
-                    evidence="network capture not available yet (network tools are a separate P0 item)")
+    if a.kind == AssertionKind.NETWORK:
+        if not isinstance(network, list):
+            return _res(a, Status.INCONCLUSIVE,
+                        evidence="this surface has no network channel, so nothing was "
+                                 "captured to check (web/Electron capture over CDP)")
+        matched = [r for r in network if _request_matches(r, a.target)]
+        seen = "; ".join(_describe_request(r) for r in matched[:5]) or "none"
+        absent = a.op == AssertionOp.ABSENT
+        if a.expected is None:
+            # No expected status: the claim is only that such a request happened at all.
+            ok = (not matched) if absent else bool(matched)
+            return _res(a, Status.PASS if ok else Status.FAIL, actual=len(matched),
+                        evidence=f"{len(matched)} of {len(network)} captured request(s) "
+                                 f"match {a.target!r}: {seen}")
+        if a.op in (AssertionOp.GTE, AssertionOp.LTE):
+            hits = [r for r in matched
+                    if isinstance(r.get("status"), int) and _cmp_num(r["status"], a.expected, a.op)]
+        else:
+            want = _status_token(a.expected)
+            if want is None:
+                return _res(a, Status.INCONCLUSIVE,
+                            evidence=f"expected {a.expected!r} is not a status: use a code "
+                                     f"(500), a class (5xx), 'ok', or 'failed'")
+            hits = [r for r in matched if _status_matches(r, want)]
+        ok = (not hits) if absent else bool(hits)
+        return _res(a, Status.PASS if ok else Status.FAIL, actual=seen,
+                    evidence=f"{len(hits)} of {len(matched)} request(s) matching "
+                             f"{a.target!r} {a.op.value} {a.expected}: {seen}")
+
     if a.kind == AssertionKind.SCREENSHOT and not screenshot:
         return _res(a, Status.INCONCLUSIVE,
                     evidence="screenshot-region baseline not available")

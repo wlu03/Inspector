@@ -6,6 +6,17 @@ from dataclasses import dataclass
 from ..models import ActionType, Element, Surface
 
 
+class UnsupportedAction(RuntimeError):
+    """Raised when a surface is asked for something it cannot do.
+
+    The alternative — returning quietly — is the failure mode this whole layer exists to
+    avoid: an agent that asked for a navigation, got no exception, and now reads the
+    unchanged home screen as evidence about the route it never visited. Every report
+    carries the surface and the reason, so the caller can pick a different route to the
+    same check instead of guessing.
+    """
+
+
 @dataclass
 class InputAction:
     """A normalized input event, dispatched by an adapter to its surface backend."""
@@ -19,6 +30,10 @@ class InputAction:
     key: str | None = None
     direction: str = "down"
     amount: int = 3
+    # NAVIGATE carries its target here. It never reaches `input()` — the session sends
+    # it to `navigate()` — but it travels as the same resolved event so one action has
+    # one representation through the trace and the logs.
+    url: str = ""
 
 
 class SurfaceAdapter(ABC):
@@ -30,6 +45,21 @@ class SurfaceAdapter(ABC):
     """
 
     surface: Surface
+
+    # The ActionTypes this adapter's `input()` really dispatches. Every adapter routes
+    # input through an if/elif chain over the type, and a chain has no else: an action
+    # it doesn't know falls off the end, returns None, and reads to the caller exactly
+    # like an action that worked. Declaring the set lets the session refuse the call
+    # with a reason instead. The default is the input vocabulary every surface has
+    # always implemented; an adapter that handles more says so by overriding it.
+    input_actions: frozenset[ActionType] = frozenset({
+        ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.TYPE,
+        ActionType.SCROLL, ActionType.DRAG, ActionType.KEY, ActionType.WAIT,
+    })
+
+    def supports_input(self, action_type: ActionType) -> bool:
+        """Whether `input()` on this surface actually dispatches `action_type`."""
+        return action_type in self.input_actions
 
     @abstractmethod
     def launch(self, repo_path: str, dev_command: str | None = None) -> None:
@@ -68,6 +98,93 @@ class SurfaceAdapter(ABC):
         The per-surface hook for the strongest evidence tier (structured facts, not
         vision judgments). Web/Electron run it over CDP; surfaces without a DOM
         inherit this empty default (the audit just no-ops).
+        """
+        return {}
+
+    def network(self) -> list[dict]:
+        """HTTP requests the app made since the previous call — the API-facing channel.
+
+        Most bugs in an app someone just built are backend bugs: a 500, a 404 on a
+        mistyped route, a CORS rejection, a fetch that hangs. None of those print a
+        console line or change a pixel, so `logs()` and the screenshot both report a
+        clean run. Records are {request_id, method, url, resource_type, status,
+        mime_type, failed, error, duration_ms}.
+
+        Kept separate from `logs()` on purpose — a surface must not fold network events
+        into its console tap, or the same failure is counted on both channels. Surfaces
+        that can't observe traffic inherit this empty default, exactly like `audit_dom`
+        and `text_elements`.
+        """
+        return []
+
+    def navigate(self, url: str) -> bool:
+        """Send the app to `url`; True only if the surface actually went there.
+
+        Whole classes of bug live behind a route change — a dead link, a blank
+        /does-not-exist instead of a 404 view, state that survives a route it should
+        not. None of that is reachable while the only way in is the screen the app
+        happened to boot on.
+
+        The default is False, NOT a silent no-op, and that distinction is the contract:
+        a surface that cannot navigate (a phone screen with no address bar) must say so,
+        because a no-op that returns success reads to the caller as "the bogus route
+        rendered fine" about a page that never left home.
+        """
+        return False
+
+    def go_back(self) -> bool:
+        """Step back one entry in session history; False if the surface can't, or
+        if there is no entry to go back to (running off the end of the history is a
+        legitimate answer, not an error)."""
+        return False
+
+    def go_forward(self) -> bool:
+        """Step forward one entry in session history; False if unsupported or already
+        at the newest entry. Together with `go_back` this is what makes "back/forward
+        after navigating keeps state coherent" an executable check."""
+        return False
+
+    def reload(self) -> bool:
+        """Reload the current view; False if the surface can't. Reload is how state
+        that only LOOKS persisted gets caught — the optimistic update that was never
+        written, the form that silently lost its draft."""
+        return False
+
+    def set_viewport(self, width: int, height: int, mobile: bool = False) -> bool:
+        """Resize the app's viewport to width x height CSS px; False if unsupported.
+
+        The responsive checks (a ~375px phone width: no horizontal overflow, nothing
+        clipped or unclickable) cannot run on a screen size fixed at launch. A surface
+        that overrides this MUST also move whatever coordinate space it maps element
+        boxes through, or every click after the resize lands at the old scale.
+        """
+        return False
+
+    def seed_state(self, state: dict) -> bool:
+        """Install a previously captured session before the app is tested.
+
+        Every session otherwise starts logged out, and on any app with auth that means
+        clicking through the login UI on every single run — slow, brittle, and it burns a
+        30-iteration budget before reaching the feature that was actually built. Seeding
+        turns "log in, then test" into "test", and makes a captured session replayable.
+
+        `state` is the plain dict `capture_state` returns — {origin, cookies,
+        local_storage, session_storage} — so it round-trips through a file unchanged.
+
+        The default is False, NOT a silent no-op, for the same reason as `navigate`: a
+        surface that cannot seed has to SAY so, because a caller told "seeded" will read
+        every logged-out screen that follows as a bug in the app rather than as a session
+        that was never installed.
+        """
+        return False
+
+    def capture_state(self) -> dict:
+        """Snapshot the current session as a JSON-serialisable dict; `{}` if unsupported.
+
+        The other half of `seed_state`: log in once by hand, capture, keep the dict, and
+        every later run starts authenticated. `{}` is the honest empty answer for a
+        surface with no session to capture — it is also what a caller should refuse to
+        write to a state file, since seeding it back would install nothing.
         """
         return {}
 

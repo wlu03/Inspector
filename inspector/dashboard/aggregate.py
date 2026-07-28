@@ -185,17 +185,34 @@ def _session_signatures(trace_root: str, sid: str) -> dict[str, dict]:
     return {finding_signature(f): f for f in _load_findings(os.path.join(trace_root, sid))}
 
 
-_STATUS_ORDER = {"open": 0, "fixing": 1, "fixed": 2, "verified": 3, "dismissed": 4}
+_STATUS_ORDER = {"open": 0, "fixing": 1, "not_run": 2, "absent": 3, "fixed": 4,
+                 "verified": 5, "dismissed": 6}
+
+# How much shorter the latest run has to be, relative to the run that reproduced a bug,
+# before we stop reading its silence as evidence. Deliberately crude: the point is to
+# refuse to call a bug fixed on the back of an exploratory run, not to model coverage.
+_SHORT_RUN_RATIO = 0.5
 
 
 def bug_ledger(trace_root: str) -> list[dict]:
     """Every unique issue (by signature, per repo) with its CURRENT fix status.
 
-    Status is evidence-based across runs: an issue present in the repo's latest run is
-    `open`; one that appeared in an earlier run but is GONE from the latest run is
-    `verified` (fixed — it no longer reproduces). A finding explicitly marked
-    `dismissed` (via update_finding_status) stays dismissed. This is how the dashboard
-    answers "was it ever fixed?" without trusting a manual flag alone.
+    This is the screen someone reads to decide "am I done?", so a green row has to mean
+    real evidence and nothing weaker. Statuses:
+
+      open      — reproduced in the repo's latest run.
+      fixing    — reproduced, and someone (or Devin) has claimed it.
+      verified  — a human or `verify_fix` explicitly signed the finding off (its own
+                  `status` field is "verified"). The ONLY green state.
+      absent    — seen in an earlier run, did not come back in the latest run, but
+                  nobody signed it off. Suggestive, not proof.
+      not_run   — the latest run produced no evidence bearing on it at all (it recorded
+                  no findings, or it was materially shorter than the run that found the
+                  bug). Absence is not evidence when the run never went looking.
+      dismissed — explicitly waved off via update_finding_status.
+
+    Every row carries an `evidence` phrase saying why it got the status it got, so the
+    dashboard can show its reasoning instead of asking to be trusted.
     """
     runs = scan_sessions(trace_root)  # newest first
     sigs_by_sid = {s["id"]: _session_signatures(trace_root, s["id"]) for s in runs}
@@ -206,7 +223,9 @@ def bug_ledger(trace_root: str) -> list[dict]:
 
     ledger: list[dict] = []
     for repo, repo_runs in by_repo.items():
-        latest_sigs = sigs_by_sid[repo_runs[0]["id"]]
+        latest = repo_runs[0]
+        latest_sigs = sigs_by_sid[latest["id"]]
+        latest_actions = latest.get("n_actions") or 0
         groups: dict[str, dict] = {}
         for s in repo_runs:  # newest → oldest
             for sig, f in sigs_by_sid[s["id"]].items():
@@ -215,10 +234,15 @@ def bug_ledger(trace_root: str) -> list[dict]:
                     "severity": (f.get("severity") or "low").lower(),
                     "suspected_area": f.get("suspected_area", ""),
                     "repo_path": repo, "sessions": [], "manual": None,
-                    "devin_url": None, "pr_url": None,
+                    "devin_url": None, "pr_url": None, "signed_off": False,
+                    # the most recent run that actually reproduced this bug — the yardstick
+                    # for "did the latest run even do as much work as the one that found it?"
+                    "found_actions": s.get("n_actions") or 0,
                 })
                 g["sessions"].append(s["id"])
                 st = (f.get("status") or "open").lower()
+                if st == "verified":
+                    g["signed_off"] = True
                 if g["manual"] is None and st in ("dismissed", "fixing", "fixed", "verified"):
                     g["manual"] = st
                 if not g["devin_url"] and f.get("devin_url"):
@@ -226,20 +250,36 @@ def bug_ledger(trace_root: str) -> list[dict]:
                 if not g["pr_url"] and f.get("pr_url"):
                     g["pr_url"] = f["pr_url"]
         for sig, g in groups.items():
-            present = sig in latest_sigs
+            latest_f = latest_sigs.get(sig)
+            present = latest_f is not None
+            latest_status = (latest_f.get("status") or "open").lower() if present else ""
             if g["manual"] == "dismissed":
-                status = "dismissed"
+                status, evidence = "dismissed", "explicitly dismissed"
+            elif present and latest_status == "verified":
+                status, evidence = "verified", f"signed off in the latest run {latest['id']}"
             elif present:
                 status = "fixing" if g["manual"] == "fixing" else "open"
+                evidence = f"reproduced in the latest run {latest['id']}"
+            elif g["signed_off"]:
+                status, evidence = "verified", "signed off on a finding marked verified"
+            elif not latest_sigs:
+                status, evidence = "not_run", "latest run recorded no findings at all"
+            elif latest_actions < g["found_actions"] * _SHORT_RUN_RATIO:
+                status, evidence = "not_run", (
+                    f"latest run took {latest_actions} actions vs "
+                    f"{g['found_actions']} in the run that found this"
+                )
             else:
-                status = "verified"  # seen before, absent from the latest run → fixed
+                status, evidence = "absent", "did not reappear in the latest run, never signed off"
             g.update({
                 "status": status,
+                "evidence": evidence,
                 "present_latest": present,
                 "occurrences": len(g["sessions"]),
-                "latest_session": repo_runs[0]["id"],
+                "latest_session": latest["id"],
             })
-            g.pop("manual", None)
+            for k in ("manual", "signed_off", "found_actions"):
+                g.pop(k, None)
             ledger.append(g)
 
     ledger.sort(key=lambda g: (_STATUS_ORDER.get(g["status"], 9),
@@ -298,8 +338,11 @@ def patch_finding(path: str, fields: dict) -> bool:
 def latest_update(trace_root: str) -> dict:
     """What changed in the most recent run vs the prior run of the SAME repo.
 
-    The 'update' the dashboard surfaces: issues newly `verified` (gone since last run),
-    `new` (appeared this run), and `still_open` (persisted). Empty when there's no run.
+    Gone-since-last-run is split in two, because conflating them is how a run that simply
+    never reached a screen ends up reported as having fixed things: `verified` is only the
+    issues whose prior finding was explicitly signed off (status "verified"), while
+    `absent` is everything that merely failed to reappear. Also `new` (appeared this run)
+    and `still_open` (persisted). Empty when there's no run.
     """
     runs = scan_sessions(trace_root)  # newest first
     if not runs:
@@ -310,12 +353,15 @@ def latest_update(trace_root: str) -> dict:
     cur = _session_signatures(trace_root, latest["id"])
     prev = _session_signatures(trace_root, repo_runs[1]["id"]) if len(repo_runs) > 1 else {}
     cur_set, prev_set = set(cur), set(prev)
+    gone = sorted(prev_set - cur_set)
+    signed_off = [s for s in gone if (prev[s].get("status") or "").lower() == "verified"]
     return {
         "repo_path": repo,
         "run_id": latest["id"],
         "alias": latest.get("alias"),
         "has_prev": len(repo_runs) > 1,
-        "verified": [_brief(prev[s]) for s in (prev_set - cur_set)],   # gone → fixed
+        "verified": [_brief(prev[s]) for s in signed_off],              # gone AND signed off
+        "absent": [_brief(prev[s]) for s in gone if s not in signed_off],  # gone, unproven
         "new": [_brief(cur[s]) for s in (cur_set - prev_set)],          # appeared this run
         "still_open": [_brief(cur[s]) for s in (cur_set & prev_set)],   # persisted
     }
