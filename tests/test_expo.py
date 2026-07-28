@@ -41,5 +41,9 @@ def test_expo_adapter_inherits_web_workflow():
 def test_plain_web_project_unaffected(tmp_path):
     (tmp_path / "package.json").write_text(json.dumps(
         {"devDependencies": {"vite": "^5"}, "scripts": {"dev": "vite"}}))
-    adapter = get_adapter(Surface.WEB, Config(), repo_path=str(tmp_path))
+    # Sandboxed config on purpose: execution defaults to "local", which now routes web
+    # to LocalWebAdapter regardless of env, and this test is about the E2B plane's
+    # Expo-vs-plain choice rather than about which plane a local caller lands on.
+    config = Config(execution="vm", e2b_api_key="e2b_test")
+    adapter = get_adapter(Surface.WEB, config, repo_path=str(tmp_path))
     assert isinstance(adapter, WebAdapter) and not isinstance(adapter, ExpoWebAdapter)

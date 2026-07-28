@@ -98,4 +98,7 @@ def test_logs_drains_console():
 def test_get_adapter_local_vs_vm_electron():
     from inspector.adapters.electron import ElectronAdapter
     assert isinstance(get_adapter(Surface.ELECTRON, Config(execution="local")), LocalElectronAdapter)
-    assert isinstance(get_adapter(Surface.ELECTRON, Config(execution="vm")), ElectronAdapter)
+    # The sandboxed branch needs a key now: without one get_adapter refuses up front
+    # rather than failing deep inside the e2b client.
+    vm = Config(execution="vm", e2b_api_key="e2b_test")
+    assert isinstance(get_adapter(Surface.ELECTRON, vm), ElectronAdapter)

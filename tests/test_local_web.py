@@ -30,9 +30,7 @@ def test_routes_to_local_web_when_url_configured(monkeypatch, tmp_path):
     assert isinstance(a, LocalWebAdapter)
 
 
-def test_falls_back_to_e2b_without_config(monkeypatch, tmp_path):
-    (tmp_path / "package.json").write_text(json.dumps({"devDependencies": {"vite": "^5"}}))
-    monkeypatch.delenv("INSPECTOR_WEB_DIST", raising=False)
-    monkeypatch.delenv("INSPECTOR_WEB_URL", raising=False)
-    a = get_adapter(Surface.WEB, Config(execution="local"), repo_path=str(tmp_path))
-    assert not isinstance(a, LocalWebAdapter)   # the E2B WebAdapter, unchanged
+# The old `test_falls_back_to_e2b_without_config` lived here and asserted that local
+# execution WITHOUT the two env vars dropped through to the billed E2B adapter. That
+# was the bug, not the contract: local now means local unconditionally. Its replacement
+# is tests/test_adapter_selection.py::test_local_web_without_any_env_uses_local_adapter.
