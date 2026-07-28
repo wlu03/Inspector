@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import re
 
-from .models import Confidence, Finding, Severity
+from .models import ActionType, Confidence, Finding, Severity
+
+# How `Session._describe_action` renders an action that had no target — "right click"
+# for RIGHT_CLICK, "reload" for RELOAD. Recognising them is what keeps a targetless
+# action a real ActionType in the spec instead of a free-text line nothing can replay.
+_BARE_VERBS = frozenset(t.value.replace("_", " ") for t in ActionType)
 
 
 def build_finding(
@@ -73,6 +78,14 @@ def build_repro_spec(session, oracle=None):
         if m:
             steps.append(ReproStep(action="key", key=m.group(1)))
             continue
+        m = re.match(r"navigate to '(.*)'$", entry)
+        if m:
+            steps.append(ReproStep(action="navigate", url=m.group(1)))
+            continue
+        m = re.match(r"go (back|forward)$", entry)
+        if m:
+            steps.append(ReproStep(action=m.group(1)))
+            continue
         m = re.match(r"drag (.+?) to (.+)$", entry)
         if m:
             steps.append(ReproStep(action="drag", locator=_endpoint_locator(m.group(1)),
@@ -82,6 +95,9 @@ def build_repro_spec(session, oracle=None):
         if m:
             steps.append(ReproStep(action=m.group(1).strip().replace(" ", "_"),
                                    locator=(m.group(2) or "")))
+            continue
+        if entry.strip() in _BARE_VERBS:  # an action logged with no target ("reload")
+            steps.append(ReproStep(action=entry.strip().replace(" ", "_")))
             continue
         steps.append(ReproStep(action=entry.strip()))
 

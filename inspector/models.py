@@ -43,11 +43,20 @@ class SessionState(str, Enum):
 class ActionType(str, Enum):
     CLICK = "click"
     DOUBLE_CLICK = "double_click"
+    RIGHT_CLICK = "right_click"
+    HOVER = "hover"
     TYPE = "type"
     SCROLL = "scroll"
     DRAG = "drag"
     KEY = "key"
     WAIT = "wait"
+    # Navigation is not an input event — it goes to the adapter's own hooks, which
+    # answer with a bool, because a surface that cannot navigate has to say so rather
+    # than no-op its way into "the bogus route rendered fine".
+    NAVIGATE = "navigate"
+    BACK = "back"
+    FORWARD = "forward"
+    RELOAD = "reload"
 
 
 class Severity(str, Enum):
@@ -96,6 +105,7 @@ class Action(BaseModel):
     to_coords: list[int] | None = None
     direction: str | None = None
     amount: int | None = None
+    url: str | None = None  # where a NAVIGATE went
     text: str | None = None
     key: str | None = None
     ts: str = Field(default_factory=_now)
@@ -111,6 +121,8 @@ class ReproStep(BaseModel):
     locator: str = ""      # semantic: the element's label/role, not raw coordinates
     to_locator: str = ""   # where a drag ENDED, again semantic — a drag with only a
                            # start point is just a click, and replays as one
+    url: str = ""          # the route a navigate step went to; without it a replay
+                           # starts on the home screen and never reaches the bug
     text: str | None = None
     key: str | None = None
 

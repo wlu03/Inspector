@@ -36,3 +36,18 @@ def test_action_records_where_a_drag_went_and_how_a_scroll_was_aimed():
 def test_repro_step_carries_a_drag_destination():
     step = ReproStep(action="drag", locator="Card A", to_locator="Done column")
     assert ReproStep.model_validate_json(step.model_dump_json()).to_locator == "Done column"
+
+
+def test_action_type_covers_navigation_and_the_extra_mouse_buttons():
+    # the whole schema in one place: every value is what the act tool documents
+    assert {t.value for t in ActionType} == {
+        "click", "double_click", "right_click", "hover", "type", "scroll", "drag",
+        "key", "wait", "navigate", "back", "forward", "reload",
+    }
+
+
+def test_action_and_repro_step_carry_a_navigated_url():
+    a = Action(seq=0, type=ActionType.NAVIGATE, url="http://localhost:3000/settings")
+    assert Action.model_validate_json(a.model_dump_json()).url.endswith("/settings")
+    step = ReproStep(action="navigate", url="/settings")
+    assert ReproStep.model_validate_json(step.model_dump_json()).url == "/settings"

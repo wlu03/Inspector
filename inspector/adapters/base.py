@@ -6,6 +6,17 @@ from dataclasses import dataclass
 from ..models import ActionType, Element, Surface
 
 
+class UnsupportedAction(RuntimeError):
+    """Raised when a surface is asked for something it cannot do.
+
+    The alternative — returning quietly — is the failure mode this whole layer exists to
+    avoid: an agent that asked for a navigation, got no exception, and now reads the
+    unchanged home screen as evidence about the route it never visited. Every report
+    carries the surface and the reason, so the caller can pick a different route to the
+    same check instead of guessing.
+    """
+
+
 @dataclass
 class InputAction:
     """A normalized input event, dispatched by an adapter to its surface backend."""
@@ -19,6 +30,10 @@ class InputAction:
     key: str | None = None
     direction: str = "down"
     amount: int = 3
+    # NAVIGATE carries its target here. It never reaches `input()` — the session sends
+    # it to `navigate()` — but it travels as the same resolved event so one action has
+    # one representation through the trace and the logs.
+    url: str = ""
 
 
 class SurfaceAdapter(ABC):
@@ -30,6 +45,21 @@ class SurfaceAdapter(ABC):
     """
 
     surface: Surface
+
+    # The ActionTypes this adapter's `input()` really dispatches. Every adapter routes
+    # input through an if/elif chain over the type, and a chain has no else: an action
+    # it doesn't know falls off the end, returns None, and reads to the caller exactly
+    # like an action that worked. Declaring the set lets the session refuse the call
+    # with a reason instead. The default is the input vocabulary every surface has
+    # always implemented; an adapter that handles more says so by overriding it.
+    input_actions: frozenset[ActionType] = frozenset({
+        ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.TYPE,
+        ActionType.SCROLL, ActionType.DRAG, ActionType.KEY, ActionType.WAIT,
+    })
+
+    def supports_input(self, action_type: ActionType) -> bool:
+        """Whether `input()` on this surface actually dispatches `action_type`."""
+        return action_type in self.input_actions
 
     @abstractmethod
     def launch(self, repo_path: str, dev_command: str | None = None) -> None:

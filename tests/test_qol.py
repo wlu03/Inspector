@@ -4,18 +4,20 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 import inspector.server as server
 from inspector import notify
-from inspector.adapters.base import InputAction
+from inspector.adapters.base import InputAction, SurfaceAdapter, UnsupportedAction
 from inspector.adapters.local_electron import LocalElectronAdapter
 from inspector.config import Config
 from inspector.dashboard.aggregate import scan_sessions
 from inspector.dashboard.render import render_index
-from inspector.models import ActionType, Element
+from inspector.models import ActionType, Element, SessionRecord, Surface
 from inspector.session import Session, SessionManager
 
 
@@ -215,11 +217,16 @@ def test_dashboard_has_live_feed_and_ticking_times():
 
 # --- 13. the action schema: every parameter really reaches the adapter -------
 
-class _StubAdapter:
-    """Only the two methods `Session._resolve` touches, so no app has to be running."""
+class _StubAdapter(SurfaceAdapter):
+    """A surface that records what it was asked to do. `can` is what it admits to
+    supporting, so the "this surface cannot" path is testable without a phone."""
 
-    def __init__(self):
+    surface = Surface.WEB
+
+    def __init__(self, can=()):
         self.actions = []
+        self.calls = []
+        self.can = set(can)
 
     def screen_size(self):
         return (1000, 1000)
@@ -227,12 +234,35 @@ class _StubAdapter:
     def input(self, action):
         self.actions.append(action)
 
+    def navigate(self, url):
+        self.calls.append(("navigate", url))
+        return "navigate" in self.can
 
-def _bare_session(*elements) -> Session:
+    def go_back(self):
+        self.calls.append(("go_back",))
+        return "go_back" in self.can
+
+    def go_forward(self):
+        self.calls.append(("go_forward",))
+        return "go_forward" in self.can
+
+    def reload(self):
+        self.calls.append(("reload",))
+        return "reload" in self.can
+
+    def launch(self, repo_path, dev_command=None): pass
+    def is_ready(self): return True
+    def screenshot(self): return b""
+    def logs(self): return []
+    def teardown(self): pass
+
+
+def _bare_session(*elements, can=()) -> Session:
     """A Session with nothing but the state the action resolver reads — building a real
     one would boot a sandbox, a detector and a trace recorder."""
     s = Session.__new__(Session)
-    s.adapter = _StubAdapter()
+    s.adapter = _StubAdapter(can)
+    s.record = SessionRecord(repo_path="/repo", surface=Surface.WEB)
     s.last_elements = list(elements)
     s.action_log = []
     return s
@@ -306,12 +336,103 @@ def test_cdp_scroll_honours_direction_and_amount():
     assert abs(up) == 300
 
 
+# --- 14. navigation and the explicit "this surface cannot" signal ------------
+
+def test_navigate_goes_to_the_adapters_navigation_hook():
+    s = _bare_session(can={"navigate"})
+    s._dispatch(s._resolve(ActionType.NAVIGATE, None, None, None, None, url="/settings"))
+    assert s.adapter.calls == [("navigate", "/settings")]
+    assert s.adapter.actions == []  # navigation is NOT an input event
+
+
+def test_navigate_without_a_url_is_refused():
+    s = _bare_session(can={"navigate"})
+    with pytest.raises(ValueError, match="url"):
+        s._resolve(ActionType.NAVIGATE, None, None, None, None)
+
+
+def test_a_surface_that_cannot_navigate_says_so_with_a_reason():
+    s = _bare_session()  # every capability answers False
+    with pytest.raises(UnsupportedAction, match="/settings"):
+        s._dispatch(s._resolve(ActionType.NAVIGATE, None, None, None, None, url="/settings"))
+
+
+@pytest.mark.parametrize("action,hook", [
+    (ActionType.BACK, "go_back"),
+    (ActionType.FORWARD, "go_forward"),
+    (ActionType.RELOAD, "reload"),
+])
+def test_history_actions_reach_their_hook_and_report_when_they_cannot(action, hook):
+    ok = _bare_session(can={hook})
+    ok._dispatch(ok._resolve(action, None, None, None, None))
+    assert ok.adapter.calls == [(hook,)]
+    with pytest.raises(UnsupportedAction, match=ok.record.surface.value):
+        _bare_session()._dispatch(_bare_session()._resolve(action, None, None, None, None))
+
+
+def test_an_input_the_surface_does_not_dispatch_is_reported_not_dropped():
+    # the base if/elif chain has no else: without this guard a hover on a surface that
+    # can't hover returns quietly and reads exactly like a hover that worked
+    s = _bare_session(_el(0, 0.5, 0.5, "Menu"))
+    with pytest.raises(UnsupportedAction, match="hover"):
+        s._dispatch(s._resolve(ActionType.HOVER, 0, None, None, None))
+    assert s.adapter.actions == []
+
+
+def test_the_cdp_surface_declares_the_pointer_actions_it_really_has():
+    a = LocalElectronAdapter(Config())
+    assert a.supports_input(ActionType.HOVER) and a.supports_input(ActionType.RIGHT_CLICK)
+    assert not SurfaceAdapter.input_actions & {ActionType.HOVER, ActionType.RIGHT_CLICK}
+
+
+class _PointerCDP:
+    def __init__(self):
+        self.calls = []
+
+    def hover(self, x, y):
+        self.calls.append(("hover", x, y))
+
+    def right_click(self, x, y):
+        self.calls.append(("right_click", x, y))
+
+
+def test_hover_and_right_click_dispatch_real_mouse_events():
+    a = LocalElectronAdapter(Config())
+    a.cdp = _PointerCDP()
+    a.input(InputAction(ActionType.HOVER, x=10, y=20))
+    a.input(InputAction(ActionType.RIGHT_CLICK, x=30, y=40))
+    assert a.cdp.calls == [("hover", 10, 20), ("right_click", 30, 40)]
+
+
+def test_a_refused_action_leaves_no_step_in_the_repro_script():
+    from inspector.loop import LoopGuard
+
+    s = _bare_session()
+    s.guard = LoopGuard()
+    s.action_seq = 0
+    s._capture_lock = threading.Lock()
+    s.trace = SimpleNamespace(save_frame=lambda png: "frame", record_action=lambda a: None)
+    with pytest.raises(UnsupportedAction):
+        s.act(ActionType.NAVIGATE, url="/settings")
+    # the log is the repro script; a navigation that never happened must not appear in it
+    assert s.action_log == []
+    assert s.action_seq == 1  # but the trace still records the attempt
+
+
 def test_act_tool_advertises_the_drag_and_scroll_parameters():
     params = asyncio.run(server.mcp.get_tool("act")).parameters["properties"]
-    for name in ("to_id", "to_coords", "direction", "amount"):
+    for name in ("to_id", "to_coords", "direction", "amount", "url"):
         assert name in params
     text = asyncio.run(server.mcp.get_tool("act")).description
     assert "drag" in text and "to_id" in text and "direction" in text
+
+
+def test_act_docstring_lists_exactly_the_action_types_that_exist():
+    # the docstring is the calling agent's only reference; a type missing from it is a
+    # capability nobody will ever use, and one listed that doesn't exist is a dead turn
+    text = asyncio.run(server.mcp.get_tool("act")).description
+    listed = re.search(r"`type` is one of:(.*?)\.", text, re.S).group(1)
+    assert {w.strip() for w in listed.split(",")} == {t.value for t in ActionType}
 
 
 def test_act_tool_rejects_an_unknown_type_by_naming_the_valid_ones():

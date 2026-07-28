@@ -5,7 +5,7 @@ import time
 
 from . import detection
 from .adapters import get_adapter
-from .adapters.base import InputAction, SurfaceAdapter
+from .adapters.base import InputAction, SurfaceAdapter, UnsupportedAction
 from .assertions import Assertion
 from .config import Config
 from .findings import build_repro_spec
@@ -19,6 +19,13 @@ from .trace import TraceRecorder
 
 
 SCROLL_DIRECTIONS = ("up", "down")
+# Actions that are a CAPABILITY of the surface rather than an input event: adapter hook
+# to call, and how to name the failure back to the agent that asked for it.
+_CAPABILITY_ACTIONS = {
+    ActionType.BACK: ("go_back", "go back in history"),
+    ActionType.FORWARD: ("go_forward", "go forward in history"),
+    ActionType.RELOAD: ("reload", "reload the current view"),
+}
 
 
 def _scroll_direction(direction: str | None) -> str:
@@ -188,20 +195,27 @@ class Session:
         to_coords: list[int] | None = None,
         direction: str = "down",
         amount: int = 3,
+        url: str = "",
     ) -> tuple[bytes, bool, list[str]]:
         """Perform one action and return (post-action SoM png, changed, new logs).
 
         `to_id` / `to_coords` are the DESTINATION of a drag (an element id from the last
         observation, or raw screen px) — a drag without one is a click. `direction` and
-        `amount` aim a scroll; they are ignored by the other action types.
+        `amount` aim a scroll, `url` is where a NAVIGATE goes; each is ignored by the
+        action types it does not belong to.
+
+        Raises `UnsupportedAction` when the surface cannot perform the action at all
+        (navigating a phone screen, hovering a touch device) — never a silent no-op,
+        because the caller judges the screen AFTER this call and an unchanged screen is
+        indistinguishable from an action that ran and did nothing.
         """
         self.touch()
         self.guard.tick()
         self._keepalive()
-        self.action_log.append(self._describe_action(
+        described = self._describe_action(
             action_type, target_id, text, key, coords=coords, to_id=to_id,
-            to_coords=to_coords, direction=direction,
-        ))
+            to_coords=to_coords, direction=direction, url=url,
+        )
         # Hold the capture lock across the whole adapter sequence so a heartbeat
         # snapshot can't interleave on the (non-reentrant) transport mid-action.
         with self._capture_lock:
@@ -216,12 +230,17 @@ class Session:
                 input_action = self._resolve(
                     action_type, target_id, text, key, coords,
                     to_id=to_id, to_coords=to_coords, direction=direction, amount=amount,
+                    url=url,
                 )
                 if input_action.x is not None and input_action.y is not None:
                     click_xy = [input_action.x, input_action.y]
                 if input_action.to_x is not None and input_action.to_y is not None:
                     drop_xy = [input_action.to_x, input_action.to_y]
-                self.adapter.input(input_action)
+                self._dispatch(input_action)
+                # Logged only once it actually happened: the action log IS the repro
+                # script, so a refused navigate left in it would produce a spec that
+                # replays a step the app never took.
+                self.action_log.append(described)
                 time.sleep(0.4)  # settle
                 after = self.adapter.screenshot()
             except Exception as exc:
@@ -229,7 +248,7 @@ class Session:
                 action = Action(
                     seq=self.action_seq, type=action_type, target_id=target_id,
                     coords=click_xy, to_coords=drop_xy, direction=direction, amount=amount,
-                    text=text, key=key, result="error", changed=False,
+                    url=url or None, text=text, key=key, result="error", changed=False,
                     screenshot_before=frame_before, logs=[f"[inspector] action error: {exc}"],
                 )
                 self.trace.record_action(action)
@@ -247,7 +266,7 @@ class Session:
 
             action = Action(
                 seq=self.action_seq, type=action_type, target_id=target_id, coords=click_xy,
-                to_coords=drop_xy, direction=direction, amount=amount,
+                to_coords=drop_xy, direction=direction, amount=amount, url=url or None,
                 text=text, key=key, result="ok" if changed else "no_change", changed=changed,
                 screenshot_before=frame_before, screenshot_after=frame_after, logs=logs,
             )
@@ -327,7 +346,7 @@ class Session:
         self, action_type: ActionType, target_id: int | None,
         text: str | None, key: str | None, coords: list[int] | None,
         *, to_id: int | None = None, to_coords: list[int] | None = None,
-        direction: str = "down", amount: int = 3,
+        direction: str = "down", amount: int = 3, url: str = "",
     ) -> InputAction:
         """Turn the tool-level arguments into the one normalized event adapters consume.
 
@@ -340,10 +359,49 @@ class Session:
         to_x, to_y = self._point(to_id, to_coords)
         if action_type == ActionType.DRAG and (to_x is None or to_y is None):
             raise ValueError("drag needs a destination: pass to_id or to_coords")
+        if action_type == ActionType.NAVIGATE and not (url or "").strip():
+            raise ValueError("navigate needs a url (absolute, or relative to the current page)")
         return InputAction(
             action_type, x=x, y=y, to_x=to_x, to_y=to_y, text=text, key=key,
             direction=_scroll_direction(direction), amount=_scroll_amount(amount),
+            url=(url or "").strip(),
         )
+
+    def _dispatch(self, action: InputAction) -> None:
+        """Send one resolved action down the channel that can actually perform it.
+
+        Navigation is not an input event: there is no pixel to click for "go back", and
+        the surfaces that can do it answer with a bool rather than by moving a pointer.
+        Routing it through the adapter's capability hooks — and turning a False into an
+        `UnsupportedAction` — is what keeps "this surface has no history" distinguishable
+        from "we went back and nothing changed". The same guard covers input: an adapter
+        that does not dispatch an ActionType would otherwise drop it off the end of its
+        if/elif chain and report success.
+        """
+        t = action.type
+        surface = self.record.surface.value
+        if t == ActionType.NAVIGATE:
+            if not self.adapter.navigate(action.url):
+                raise UnsupportedAction(
+                    f"{surface} did not navigate to {action.url!r} — the surface either "
+                    f"cannot navigate or refused this target (see the adapter's log)"
+                )
+            return
+        hook = _CAPABILITY_ACTIONS.get(t)
+        if hook is not None:
+            name, what = hook
+            if not getattr(self.adapter, name)():
+                raise UnsupportedAction(
+                    f"{surface} could not {what}: the surface either has no such control, "
+                    f"or (going back/forward) there was no history entry to move to"
+                )
+            return
+        if not self.adapter.supports_input(t):
+            raise UnsupportedAction(
+                f"{surface} does not support the {t.value!r} action; supported here: "
+                f"{', '.join(sorted(a.value for a in self.adapter.input_actions))}"
+            )
+        self.adapter.input(action)
 
     def _point(
         self, target_id: int | None, coords: list[int] | None
@@ -368,7 +426,7 @@ class Session:
         self, action_type: ActionType, target_id: int | None,
         text: str | None, key: str | None, *, coords: list[int] | None = None,
         to_id: int | None = None, to_coords: list[int] | None = None,
-        direction: str = "down",
+        direction: str = "down", url: str = "",
     ) -> str:
         """One human-readable line for the action log — which is also the repro script.
 
@@ -380,6 +438,10 @@ class Session:
             return f"type {text!r}"
         if action_type == ActionType.KEY:
             return f"press {key!r}"
+        if action_type == ActionType.NAVIGATE:
+            return f"navigate to {(url or '').strip()!r}"
+        if action_type in (ActionType.BACK, ActionType.FORWARD):
+            return f"go {action_type.value}"
         if action_type == ActionType.SCROLL:
             return f"scroll {_scroll_direction(direction)}"
         verb = action_type.value.replace("_", " ")

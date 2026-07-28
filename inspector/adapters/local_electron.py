@@ -50,6 +50,10 @@ _port_seq = itertools.count(CDP_PORT)
 
 class LocalElectronAdapter(SurfaceAdapter):
     surface = Surface.ELECTRON
+    # CDP dispatches real mouse events, so this surface can do the two the pixel-level
+    # backends can't: a hover that updates `:hover`, and a right button that raises
+    # `contextmenu`. Inherited by LocalWebAdapter.
+    input_actions = SurfaceAdapter.input_actions | {ActionType.HOVER, ActionType.RIGHT_CLICK}
 
     def __init__(self, config: Config):
         self.config = config
@@ -169,6 +173,10 @@ class LocalElectronAdapter(SurfaceAdapter):
             self.cdp.click(action.x, action.y)
         elif t == ActionType.DOUBLE_CLICK:
             self.cdp.click(action.x, action.y, clicks=2)
+        elif t == ActionType.RIGHT_CLICK:
+            self.cdp.right_click(action.x, action.y)
+        elif t == ActionType.HOVER:
+            self.cdp.hover(action.x, action.y)
         elif t == ActionType.TYPE:
             if action.x is not None and action.y is not None:
                 self.cdp.click(action.x, action.y)  # focus the field first

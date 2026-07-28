@@ -70,6 +70,35 @@ def test_a_drag_to_raw_coordinates_still_records_where_it_went():
     assert step.action == "drag" and step.to_locator == "(640, 480)"
 
 
+def test_a_navigate_round_trips_through_the_action_log():
+    # the one that MUST survive: a repro spec that lost its navigation replays the
+    # whole scenario on whatever page the app booted on, and quietly reproduces nothing
+    [step] = _round_trip(
+        ((ActionType.NAVIGATE, None, None, None), {"url": "http://localhost:3000/settings"})
+    )
+    assert step.action == "navigate"
+    assert step.url == "http://localhost:3000/settings"
+
+
+def test_history_and_pointer_actions_round_trip():
+    steps = _round_trip(
+        ((ActionType.BACK, None, None, None), {}),
+        ((ActionType.FORWARD, None, None, None), {}),
+        ((ActionType.RELOAD, None, None, None), {}),
+        ((ActionType.HOVER, 0, None, None), {}),
+        ((ActionType.RIGHT_CLICK, 1, None, None), {}),
+    )
+    assert [s.action for s in steps] == ["back", "forward", "reload", "hover", "right_click"]
+    assert steps[3].locator == "Card" and steps[4].locator == "Done column"
+    # every parsed action is a real ActionType, i.e. something a replay can dispatch
+    assert all(ActionType(s.action) for s in steps)
+
+
+def test_a_targetless_pointer_action_is_still_a_real_action_type():
+    [step] = _round_trip(((ActionType.RIGHT_CLICK, None, None, None), {}))
+    assert step.action == "right_click" and ActionType(step.action) is ActionType.RIGHT_CLICK
+
+
 def test_a_scroll_records_the_direction_it_was_aimed():
     [up, down] = _round_trip(
         ((ActionType.SCROLL, None, None, None), {"direction": "up"}),

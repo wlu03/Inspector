@@ -533,6 +533,24 @@ class CDPClient:
         self._cmd("Input.dispatchMouseEvent",
                   {"type": "mouseWheel", "x": x, "y": y, "deltaX": 0, "deltaY": dy})
 
+    def hover(self, x: int, y: int) -> None:
+        """Move the pointer over (x, y) without pressing anything.
+
+        A real mouseMoved is the only way to reach hover-only UI — a dropdown that opens
+        on hover, a tooltip, a row's delete button that only appears on mouseover. A
+        synthesized DOM event would not update `:hover` at all, so the CSS half of that
+        UI (most of it) would never render and the check would be meaningless.
+        """
+        self._cmd("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+
+    def right_click(self, x: int, y: int) -> None:
+        """Press and release the right button, which is what makes Chromium raise the
+        page's `contextmenu` event — the entry point to every custom context menu, and
+        the one input the left-button `click` path can never produce."""
+        for phase in ("mousePressed", "mouseReleased"):
+            self._cmd("Input.dispatchMouseEvent",
+                      {"type": phase, "x": x, "y": y, "button": "right", "clickCount": 1})
+
     def drag(self, x1: int, y1: int, x2: int, y2: int) -> None:
         self._cmd("Input.dispatchMouseEvent",
                   {"type": "mousePressed", "x": x1, "y": y1, "button": "left", "clickCount": 1})

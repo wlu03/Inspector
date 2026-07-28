@@ -521,14 +521,21 @@ def act(
     to_coords: list[int] | None = None,
     direction: str = "down",
     amount: int = 3,
+    url: str = "",
     include_image: bool = True,
 ) -> ActResult:
     """Perform one action and return the post-action Set-of-Mark image + `changed` + logs.
 
-    `type` is one of: click, double_click, type, scroll, drag, key, wait.
+    `type` is one of: click, double_click, right_click, hover, type, scroll, drag, key,
+    wait, navigate, back, forward, reload.
     Prefer `target_id` (from `observe`) over raw `coords`. Extra arguments per type:
     `text` for type, `key` for key, `direction` ("up"/"down") + `amount` (wheel notches)
-    for scroll, and `to_id` OR `to_coords` for the destination of a drag.
+    for scroll, `to_id` OR `to_coords` for the destination of a drag, and `url` for
+    navigate (absolute, or relative to the current page — "#/settings" works too).
+
+    navigate/back/forward/reload are not available on every surface; a surface that
+    cannot perform the action fails the call with the reason instead of quietly doing
+    nothing, so an unchanged screen is never mistaken for a route that rendered fine.
 
     The returned image is the screen *after* the action — this is verify-after-act. Set
     `include_image=false` (or hit the per-session image cap) to get `changed`+logs only
@@ -537,7 +544,7 @@ def act(
     session = MANAGER.get(session_id)
     som, changed, logs = session.act(
         _action_type(type), target_id, text, key, coords,
-        to_id=to_id, to_coords=to_coords, direction=direction, amount=amount,
+        to_id=to_id, to_coords=to_coords, direction=direction, amount=amount, url=url,
     )
     data = {"changed": changed, "logs": logs}
     if include_image and session.image_allowed():
