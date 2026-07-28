@@ -29,6 +29,11 @@ from .trace import TraceRecorder
 
 
 SCROLL_DIRECTIONS = ("up", "down")
+# Words a human plan can use that clearly MEAN a direction. The supported subset is
+# SCROLL_DIRECTIONS; the rest are recognized precisely so they can be refused. A parser
+# that dropped "left" as unparseable would fall back to scrolling down, which is the one
+# outcome worse than refusing: the author asked to go left and the replay swears it did.
+DIRECTION_WORDS = ("up", "down", "left", "right")
 # Actions that are a CAPABILITY of the surface rather than an input event: adapter hook
 # to call, and how to name the failure back to the agent that asked for it.
 _CAPABILITY_ACTIONS = {

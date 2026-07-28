@@ -360,3 +360,17 @@ def test_saved_plan_is_plain_json(tmp_path):
     with open(path) as f:
         raw = json.load(f)
     assert raw["scenarios"][0]["assertions"][0]["target"] == "Saved"
+
+
+def test_parse_step_keeps_an_unsupported_scroll_direction_so_replay_refuses_it():
+    # "left" is a real direction no surface can do: keep it, so the replay refuses the
+    # step and the scenario reports it was never reached. Blanking it would scroll DOWN
+    # and report success on a screen the author never asked for.
+    step = parse_step("scroll left to the sidebar")
+    assert step.direction == "left"
+
+
+def test_parse_step_defaults_a_scroll_that_names_no_direction():
+    # "to" is not a direction word — no instruction was given, so take the default
+    assert parse_step("scroll to the footer").direction == ""
+    assert parse_step("scroll down").direction == "down"

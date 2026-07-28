@@ -327,7 +327,7 @@ def parse_step(step: str):
     something else in their place.
     """
     from .models import ReproStep
-    from .session import SCROLL_DIRECTIONS
+    from .session import DIRECTION_WORDS
 
     text = (step or "").strip()
     low = text.lower()
@@ -345,11 +345,14 @@ def parse_step(step: str):
         if action == "key":
             return ReproStep(action=action, key=arg) if arg else None
         if action == "scroll":
-            # "scroll up to the header" — only the direction is executable, and an
-            # unknown one is dropped rather than guessed, so the replay scrolls the
-            # way the author wrote or the default way, never the opposite way.
+            # "scroll up to the header" — only the direction is executable. A word that
+            # names a direction is kept even when no surface can perform it ("left"), so
+            # the replay REFUSES the step and the scenario reports it was never reached;
+            # blanking it here would scroll down and report success on a screen the
+            # author never asked for. A word that isn't a direction at all ("scroll to
+            # the footer") carries no instruction, so it takes the default.
             word = arg.split()[0].lower() if arg else ""
-            return ReproStep(action=action, direction=word if word in SCROLL_DIRECTIONS else "")
+            return ReproStep(action=action, direction=word if word in DIRECTION_WORDS else "")
         if action in _BARE_ACTIONS:
             return ReproStep(action=action)
         return ReproStep(action=action, locator=arg) if arg else None
