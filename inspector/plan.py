@@ -396,10 +396,13 @@ def run_scenario(session, scenario: Scenario) -> ScenarioRun:
             notes="no executable steps: none of this scenario's steps name an action "
                   "(write them as 'click \"Save\"' / 'type \"hi\"' / 'navigate to \"/cart\"')",
         )
-    done, total = replay_spec(session, ReproSpec(steps=steps))
+    outcome = replay_spec(session, ReproSpec(steps=steps))
     new = [fid for fid in session.record.findings if fid not in before]
-    if done < total:
-        status, why = ScenarioStatus.BLOCKED, f"could not replay step {done + 1}/{total}"
+    if not outcome.reached:
+        status, why = ScenarioStatus.BLOCKED, f"could not be reached: {outcome.unreachable}"
+    elif not outcome.complete:
+        status, why = (ScenarioStatus.BLOCKED,
+                       f"could not replay step {outcome.completed + 1}/{outcome.total}")
     elif new:
         status, why = ScenarioStatus.FAILED, f"{len(new)} new finding(s) while walking it"
     else:
