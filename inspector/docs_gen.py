@@ -25,7 +25,14 @@ def _kind(tool) -> str:
 
 
 def _first_line(text: str | None) -> str:
-    return (text or "").strip().split("\n", 1)[0].strip()
+    """The tool's summary line, safe to drop into a markdown table cell.
+
+    Several tools describe themselves with a pipe-separated verdict set ("pass | fail |
+    inconclusive"); left raw, each pipe opens a new column and the row renders as
+    gibberish. Escaping is done here rather than in the docstrings so the tool
+    descriptions the AGENT reads stay plain prose.
+    """
+    return (text or "").strip().split("\n", 1)[0].strip().replace("|", "\\|")
 
 
 async def _collect() -> str:
