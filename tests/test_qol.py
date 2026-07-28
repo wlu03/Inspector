@@ -13,6 +13,7 @@ import pytest
 import inspector.server as server
 from inspector import notify
 from inspector.adapters.base import InputAction, SurfaceAdapter, UnsupportedAction
+from inspector.assertions import Assertion, AssertionKind
 from inspector.adapters.local_electron import LocalElectronAdapter
 from inspector.config import Config
 from inspector.dashboard.aggregate import scan_sessions
@@ -75,7 +76,7 @@ def test_instructions_document_the_fix_loop_that_core_actually_exposes():
 def test_profiles_partition_the_tool_registry():
     both = server.CORE_TOOLS | server.ADVANCED_TOOLS
     assert not (server.CORE_TOOLS & server.ADVANCED_TOOLS)
-    assert len(server.CORE_TOOLS) == 13 and len(both) == 26
+    assert len(server.CORE_TOOLS) == 16 and len(both) == 29
     for name in both:  # every classified tool is actually registered
         assert asyncio.run(server.mcp.get_tool(name)) is not None
 
@@ -570,6 +571,167 @@ def test_observe_returns_the_bounded_network_window():
 def test_observe_omits_network_on_a_surface_that_cannot_see_traffic():
     # absent is the honest answer: an empty summary would read as "no requests were made"
     assert "network" not in _observe_with(_StubAdapter(), [])
+
+
+# --- 16. viewport + captured session state at the MCP boundary ----------------
+
+class _ViewportAdapter(_StubAdapter):
+    """A surface that records resize requests and can be told to refuse them."""
+
+    def __init__(self, ok=True):
+        super().__init__()
+        self.ok = ok
+        self.viewports = []
+
+    def set_viewport(self, width, height, mobile=False):
+        self.viewports.append((width, height, mobile))
+        return self.ok
+
+
+class _StateAdapter(_StubAdapter):
+    """A surface with a real session channel: capture hands back credentials, seed takes
+    them. The values are deliberately distinctive so a leak is greppable."""
+
+    STATE = {"origin": "http://app", "cookies": [{"name": "sid", "value": "s3cr3t"}],
+             "local_storage": {"token": "t0ken"}, "session_storage": {}}
+
+    def __init__(self):
+        super().__init__()
+        self.seeded = []
+
+    def capture_state(self):
+        return dict(self.STATE)
+
+    def seed_state(self, state):
+        self.seeded.append(state)
+        return True
+
+
+def _session_with(adapter) -> Session:
+    """A Session carrying only what the viewport/state path touches."""
+    s = Session.__new__(Session)
+    s.adapter = adapter
+    s.record = SessionRecord(repo_path="/repo", surface=Surface.WEB)
+    s.last_elements = [_el(0, 0.5, 0.5, "Save")]
+    s._capture_lock = threading.Lock()
+    return s
+
+
+def _with_session(session):
+    server.MANAGER.sessions[session.record.id] = session
+    return session.record.id
+
+
+def test_set_viewport_drops_element_ids_measured_at_the_old_size():
+    s = _session_with(_ViewportAdapter())
+    assert s.set_viewport(375, 812, mobile=True) is True
+    assert s.adapter.viewports == [(375, 812, True)]
+    # a click on #0 now would land at 375px * a fraction of the 1280px screen it was measured on
+    assert s.last_elements == []
+
+
+def test_a_refused_resize_keeps_the_observation_that_is_still_true():
+    s = _session_with(_ViewportAdapter(ok=False))
+    assert s.set_viewport(375, 812) is False
+    assert s.last_elements
+
+
+def test_set_viewport_tool_reports_a_surface_that_cannot_resize():
+    sid = _with_session(_session_with(_ViewportAdapter(ok=False)))
+    try:
+        out = server.set_viewport(sid, 375, 812)
+    finally:
+        server.MANAGER.sessions.pop(sid, None)
+    assert out["ok"] is False and "could not resize" in out["error"]
+
+
+def test_set_viewport_tool_refuses_a_degenerate_size():
+    sid = _with_session(_session_with(_ViewportAdapter()))
+    try:
+        out = server.set_viewport(sid, 0, 812)
+    finally:
+        server.MANAGER.sessions.pop(sid, None)
+    assert out["ok"] is False and "positive" in out["error"]
+
+
+def test_capture_then_seed_replays_a_login_through_a_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.CONFIG, "trace_root", str(tmp_path))
+    session = _session_with(_StateAdapter())
+    sid = _with_session(session)
+    try:
+        saved = server.capture_state(sid, name="login")
+        seeded = server.seed_state(sid, name="login")
+    finally:
+        server.MANAGER.sessions.pop(sid, None)
+    assert saved["ok"] and saved["saved_as"] == "login" and saved["origin"] == "http://app"
+    assert saved["cookies"] == 1 and saved["local_storage_keys"] == 1
+    assert os.path.exists(os.path.join(str(tmp_path), "state", "login.json"))
+    # the state that reaches the adapter is the one that was captured, byte for byte
+    assert seeded["ok"] is True and session.adapter.seeded == [_StateAdapter.STATE]
+
+
+def test_seed_state_says_so_when_there_is_nothing_to_install(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.CONFIG, "trace_root", str(tmp_path))
+    sid = _with_session(_session_with(_StateAdapter()))
+    try:
+        missing = server.seed_state(sid, name="never-captured")
+        empty = server.seed_state(sid, state={})
+    finally:
+        server.MANAGER.sessions.pop(sid, None)
+    # both must be a loud false: a caller told "seeded" reads every logged-out screen
+    # that follows as a bug in the app
+    assert missing["ok"] is False and "capture_state" in missing["error"]
+    assert empty["ok"] is False and "install nothing" in empty["error"]
+
+
+def test_capture_state_refuses_to_save_an_empty_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.CONFIG, "trace_root", str(tmp_path))
+    sid = _with_session(_session_with(_StubAdapter()))  # no session channel at all
+    try:
+        out = server.capture_state(sid, name="login")
+    finally:
+        server.MANAGER.sessions.pop(sid, None)
+    assert out["ok"] is False and "nothing to capture" in out["error"]
+    assert not os.path.exists(os.path.join(str(tmp_path), "state", "login.json"))
+
+
+class _ChannelAdapter(_NetAdapter):
+    def text_elements(self):
+        return [Element(id=9, label="Welcome back", bbox=[0, 0, 1, 1])]
+
+    def control_state(self, element_id):
+        return {"value": "Alice"}
+
+
+class _ChannelSession:
+    """Session-shaped enough for the one channel gatherer both paths now use."""
+
+    def __init__(self):
+        self.adapter = _ChannelAdapter()
+        self.last_network = [_rec("http://x/api/items", 500)]
+
+    def observe(self):
+        return b"", [Element(id=0, label="Name", role="textbox", bbox=[0, 0, 1, 1])], []
+
+
+def test_check_assertions_reads_exactly_what_re_verification_reads():
+    # these were two near-identical copies; an oracle judged against a different set of
+    # facts at file time than at re-verify time is the one comparison that must not drift
+    stub = _ChannelSession()
+    from_tool = server._assertion_context(
+        stub, [Assertion(kind=AssertionKind.VALUE, on="Name", expected="Alice")])
+    from_oracle = Session.observation_context(stub, {"Name"})
+    assert from_tool == from_oracle
+    assert from_tool["states"]["name"] == {"value": "Alice"}
+    assert "Welcome back" in from_tool["texts"]
+    # and the new channel arrived in both at once
+    assert from_tool["network"] == stub.last_network
+
+
+def test_a_surface_without_a_tap_reports_no_network_channel_not_an_empty_one():
+    stub = _ChannelSession()
+    stub.adapter = _StubAdapter()
+    assert Session.observation_context(stub, frozenset())["network"] is None
 
 
 def test_live_sessions_provider_reads_the_manager():

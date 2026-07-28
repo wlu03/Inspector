@@ -88,6 +88,57 @@ def test_http_non_loopback_bind_refused():
         main(["--http", "--host", "0.0.0.0"])
 
 
+def test_state_name_is_one_segment_under_the_trace_root(tmp_path, monkeypatch):
+    import inspector.server as server
+
+    monkeypatch.setattr(server.CONFIG, "trace_root", str(tmp_path))
+    assert server._state_path("login").startswith(str(tmp_path))
+    for bad in ["../../etc/passwd", "a/b", "", "..", "/abs"]:
+        with pytest.raises(ValueError):
+            server._state_path(bad)
+
+
+def test_a_saved_session_state_is_owner_only(tmp_path, monkeypatch):
+    import stat
+
+    import inspector.server as server
+
+    monkeypatch.setattr(server.CONFIG, "trace_root", str(tmp_path))
+    path = server._write_state("login", {"cookies": [{"name": "sid", "value": "s3cr3t"}]})
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_no_tool_result_ever_carries_the_captured_credentials(tmp_path, monkeypatch):
+    """The whole result of a state tool goes into the host transcript and is read back by
+    a model, so it may only ever describe the state by its shape."""
+    import json
+    from types import SimpleNamespace
+
+    import inspector.server as server
+
+    monkeypatch.setattr(server.CONFIG, "trace_root", str(tmp_path))
+    secret = {"origin": "http://app", "cookies": [{"name": "sid", "value": "s3cr3t"}],
+              "local_storage": {"token": "t0ken"}}
+
+    class _SeedSession:
+        record = SimpleNamespace(id="ses_seed", surface=SimpleNamespace(value="web"))
+
+        def touch(self):
+            pass
+
+        def seed_state(self, state):
+            return True
+
+    server.MANAGER.sessions["ses_seed"] = _SeedSession()
+    try:
+        out = server.seed_state("ses_seed", state=secret)
+    finally:
+        server.MANAGER.sessions.pop("ses_seed", None)
+    blob = json.dumps(out) + json.dumps(server._state_summary(secret))
+    assert "s3cr3t" not in blob and "t0ken" not in blob
+    assert out["ok"] is True and out["cookies"] == 1 and out["local_storage_keys"] == 1
+
+
 def test_config_env_parsing(monkeypatch):
     monkeypatch.setenv("INSPECTOR_ALLOW_UNSAFE_LOCAL", "1")
     monkeypatch.setenv("INSPECTOR_WORKSPACE_ROOTS", f"/a{os.pathsep}/b,/c")

@@ -3,7 +3,7 @@
 _Generated from the server by `scripts/gen_docs.py`. Do not edit by hand;
 run `python scripts/gen_docs.py` to regenerate._
 
-The default `core` profile exposes 13 tools; `INSPECTOR_PROFILE=full` exposes all 26.
+The default `core` profile exposes 16 tools; `INSPECTOR_PROFILE=full` exposes all 29.
 
 ## Core tools (default profile)
 
@@ -11,6 +11,7 @@ The default `core` profile exposes 13 tools; `INSPECTOR_PROFILE=full` exposes al
 |---|---|---|
 | `act` | write | Perform one action and return the post-action Set-of-Mark image + `changed` + logs. |
 | `audit_dom` | write | Run a DETERMINISTIC DOM audit (web/Electron) and file any issues as findings. |
+| `capture_state` | write | Save the app's CURRENT session (cookies + web storage) for later runs to replay. |
 | `check` | write | Check for NEW runtime errors and return a screenshot. Three-valued; never a false pass. |
 | `check_assertions` | write | Evaluate typed assertions against the live app: each pass | fail | inconclusive. |
 | `get_findings` | read-only | Return the findings collected this session (from the deterministic log tap). |
@@ -18,6 +19,8 @@ The default `core` profile exposes 13 tools; `INSPECTOR_PROFILE=full` exposes al
 | `launch_status` | read-only | Poll a background launch (from `launch_app(wait=false)`). |
 | `observe` | read-only | Screenshot the running app and return a Set-of-Mark image + element list + recent logs. |
 | `report_issue` | write | File a finding the HOST agent judged from the screenshot (host-as-brain). |
+| `seed_state` | write | Install a captured session so the run starts logged in, before you test anything. |
+| `set_viewport` | write | Resize the app's viewport — this is what makes the responsive checks executable. |
 | `stop` | destructive | Tear down the sandbox (released first), then write the replay (html + video). |
 | `test_app` | destructive | ONE CALL: launch the app in a VM, autonomously explore it, and return the bugs found. |
 | `update_finding_status` | write | Record fix-loop progress on a finding: open | fixed | verified | dismissed. |

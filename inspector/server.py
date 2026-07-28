@@ -19,8 +19,14 @@ from .assertions import Assertion, AssertionKind, evaluate_assertions, summarize
 from .config import Config
 from .findings import build_finding, build_repro_spec
 from .models import ActionType, SessionState, Severity, Surface
+from .paths import valid_id
 from .plan import ScenarioStatus, build_plan
-from .session import SessionManager, summarize_network, supports_network
+from .session import (
+    SessionManager,
+    observation_channels,
+    summarize_network,
+    supports_network,
+)
 
 CONFIG = Config.from_env()
 MANAGER = SessionManager(CONFIG)
@@ -48,7 +54,12 @@ INSTRUCTIONS = (
     "finding_id, 'fixed'), then verify_fix(session_id, finding_id) — it relaunches the "
     "app, replays the finding's repro and re-evaluates its oracle (fixed | still_present "
     "| not_run). Mark it 'verified' once that comes back fixed.\n\n"
-    "The default `core` profile exposes 13 tools; INSPECTOR_PROFILE=full adds the other "
+    "Starting conditions: capture_state(session_id[, name]) saves a logged-in session "
+    "(cookies + web storage) to disk and seed_state(session_id, name=...) replays it on "
+    "a later run, so an app behind auth is tested instead of its login form; "
+    "set_viewport(session_id, 375, 812, mobile=true) is how the narrow-viewport checks "
+    "actually run.\n\n"
+    "The default `core` profile exposes 16 tools; INSPECTOR_PROFILE=full adds the other "
     "13: fix_finding / bug_ledger, the dashboard (open_dashboard / build_dashboard), "
     "cross-run history (list_runs / get_run), test plans (set_plan / update_scenario / "
     "test_report), test_app_parallel / test_feature, and Devin auto-fix (fix_with_devin / "
@@ -75,10 +86,13 @@ EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldH
 # to ever close it. The rest are advanced/admin tools, hidden unless
 # INSPECTOR_PROFILE=full — fix_finding only re-serves finding data get_findings
 # already returned, and bug_ledger is cross-run reporting, not part of the loop.
+# set_viewport / capture_state / seed_state are core for the same reason: almost every
+# real application is behind a login and has a phone layout, so without them the default
+# profile can only test the logged-out desktop shell of the app it was pointed at.
 CORE_TOOLS = frozenset({
     "launch_app", "launch_status", "observe", "act", "check", "audit_dom",
     "report_issue", "get_findings", "stop", "test_app", "check_assertions",
-    "update_finding_status", "verify_fix",
+    "update_finding_status", "verify_fix", "set_viewport", "capture_state", "seed_state",
 })
 ADVANCED_TOOLS = frozenset({
     "open_dashboard", "build_dashboard", "list_runs", "get_run", "fix_finding",
@@ -361,6 +375,27 @@ class ReportIssueResult(TypedDict, total=False):
     total_findings: int
 
 
+class ViewportResult(TypedDict, total=False):
+    ok: bool
+    width: int
+    height: int
+    mobile: bool
+    note: str
+    error: str
+
+
+class StateResult(TypedDict, total=False):
+    ok: bool
+    origin: str
+    cookies: int
+    local_storage_keys: int
+    session_storage_keys: int
+    saved_as: str
+    seeded_from: str
+    note: str
+    error: str
+
+
 class AuditResult(TypedDict, total=False):
     axe_violations: list
     broken_images: list
@@ -610,35 +645,18 @@ def check(session_id: str, expectation: str) -> CheckResult:
 
 
 def _assertion_context(session, parsed: list[Assertion]) -> dict:
-    """Gather the observation channels the assertions need: visible text, elements,
-    the current URL (CDP surfaces), and control-state for any referenced elements."""
-    _som, elements, _logs = session.observe()
-    texts = [e.label for e in elements if e.label]
-    try:
-        texts += [t.label for t in session.adapter.text_elements() if t.label]
-    except Exception:
-        pass
-    el_dicts = [{"label": e.label, "role": e.role} for e in elements]
-    url = None
-    cdp = getattr(session.adapter, "cdp", None)
-    if cdp is not None:
-        try:
-            v = cdp.evaluate("window.location.href")
-            url = v.strip('"') if isinstance(v, str) else v
-        except Exception:
-            url = None
-    need = {a.on.lower() for a in parsed
-            if a.kind in (AssertionKind.VALUE, AssertionKind.STATE) and a.on}
-    states: dict = {}
-    if need:
-        for e in elements:
-            lab = (e.label or "").lower()
-            if lab in need and lab not in states:
-                try:
-                    states[lab] = session.adapter.control_state(e.id)
-                except Exception:
-                    pass
-    return {"texts": texts, "elements": el_dicts, "url": url, "states": states}
+    """The channels these assertions need, from the session's own observation.
+
+    This used to be a second, near-identical copy of `Session.observation_context` — one
+    read by `check_assertions`, the other by re-verification — which meant every new
+    channel had to be added twice and an oracle could be judged against a different set
+    of facts here than it was judged against at re-verify time. There is now one gatherer;
+    this only works out which elements need their control state read, since that is the
+    one thing that depends on the assertions rather than on the app.
+    """
+    labels = {a.on for a in parsed
+              if a.kind in (AssertionKind.VALUE, AssertionKind.STATE) and a.on}
+    return observation_channels(session, labels)
 
 
 @mcp.tool(annotations=WRITE)
@@ -649,9 +667,16 @@ def check_assertions(session_id: str, assertions: list[Assertion]) -> Assertions
     Unlike `check` (a runtime-error gate), this actually evaluates expectations. Each
     assertion has {kind, target, op, expected, on}: kind in text | role | value | count
     | url | state | network | screenshot; op in present | absent | equals | contains |
-    gte | lte. A channel that isn't available (network/screenshot, a missing element, no
-    URL on this surface) returns `inconclusive` with a reason, never a false pass.
-    Returns per-assertion results with evidence plus an `overall` verdict.
+    gte | lte. A channel that isn't available (a screenshot baseline, a missing element,
+    no URL or no network tap on this surface) returns `inconclusive` with a reason, never
+    a false pass. Returns per-assertion results with evidence plus an `overall` verdict.
+
+    A `network` assertion matches `target` as a substring of "<METHOD> <url>" over the
+    requests captured since the last observation ("/api/items", or "POST /api/items"),
+    and `expected` against the outcome: a code (500), a class (5xx), "ok" or "failed".
+    So "the save actually reached the server" is `{"kind": "network", "target":
+    "POST /api/save", "expected": "ok"}`, and "nothing 5xx'd" is `{"kind": "network",
+    "expected": "5xx", "op": "absent"}`.
 
     The set is remembered on the session: any finding filed afterwards inherits it as
     its re-verification oracle, so a bug caught here is later re-checked by this exact
@@ -756,6 +781,153 @@ def audit_dom(session_id: str) -> AuditResult:
         "new_findings": new_ids,
         "total_findings": len(session.record.findings),
     }
+
+
+@mcp.tool(annotations=WRITE)
+@_friendly
+def set_viewport(session_id: str, width: int, height: int, mobile: bool = False) -> ViewportResult:
+    """Resize the app's viewport — this is what makes the responsive checks executable.
+
+    A run is otherwise stuck at whatever size the app booted with, so "does this work on
+    a phone" (375x812, `mobile=true` for touch emulation) can be planned but never tested.
+    Surfaces that cannot resize say so instead of quietly staying put, because a layout
+    that was never narrowed reads exactly like a layout that survived being narrowed.
+
+    Element ids from the previous `observe` are discarded on success — their coordinates
+    belong to the old size — so call `observe` again before the next `act`.
+    """
+    session = MANAGER.get(session_id)
+    if int(width) <= 0 or int(height) <= 0:
+        return {"ok": False, "error": "width and height must be positive CSS pixels"}
+    if not session.set_viewport(width, height, mobile=mobile):
+        return {
+            "ok": False, "width": width, "height": height, "mobile": mobile,
+            "error": f"{session.record.surface.value} could not resize to "
+                     f"{width}x{height} — this surface has no viewport control",
+        }
+    return {
+        "ok": True, "width": width, "height": height, "mobile": mobile,
+        "note": "viewport changed; element ids from the last observation are stale — "
+                "call observe again before acting",
+    }
+
+
+def _state_path(name: str) -> str:
+    """Resolve a saved-state name to a file under the trace root, refusing traversal.
+
+    `name` is one path segment, validated by the same `valid_id` the dashboard uses for
+    session and finding ids. Taking a path from the caller instead would be an arbitrary
+    file write on the capture side and an arbitrary file read on the seeding side, and
+    this particular tool is the one that handles credentials.
+    """
+    if not valid_id(name):
+        raise ValueError(f"invalid state name {name!r}: letters, digits, '_' and '-' only")
+    return os.path.join(CONFIG.trace_root, "state", f"{name}.json")
+
+
+def _write_state(name: str, state: dict) -> str:
+    """Persist a captured session owner-only — this is a credential file, not a report."""
+    path = _state_path(name)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f)
+    return path
+
+
+def _state_summary(state: dict) -> dict:
+    """Describe a state by its SHAPE only — origin and counts, never a value.
+
+    Cookie values and storage entries are session tokens. Everything a tool returns is
+    written into the host agent's transcript and read back by a model, so this is the
+    only description of a state that ever crosses the boundary.
+    """
+    return {
+        "origin": str(state.get("origin") or ""),
+        "cookies": len(state.get("cookies") or []),
+        "local_storage_keys": len(state.get("local_storage") or {}),
+        "session_storage_keys": len(state.get("session_storage") or {}),
+    }
+
+
+def _has_state(state: dict) -> bool:
+    return bool(state.get("cookies") or state.get("local_storage")
+                or state.get("session_storage"))
+
+
+@mcp.tool(annotations=WRITE)
+@_friendly
+def capture_state(session_id: str, name: str = "default") -> StateResult:
+    """Save the app's CURRENT session (cookies + web storage) for later runs to replay.
+
+    Log in once — by hand or by driving the form — then call this. Every later run can
+    `seed_state(session_id, name=...)` and start authenticated instead of spending a
+    third of its step budget on the login UI before it reaches the feature you built.
+
+    The state is written to `<trace_root>/state/<name>.json`, owner-readable only. It is
+    NOT returned: what comes back is the origin and how many cookies / storage keys were
+    captured, because the contents are session credentials and everything a tool returns
+    ends up in the transcript. `name` is a plain identifier, not a path.
+    """
+    session = MANAGER.get(session_id)
+    try:
+        _state_path(name)  # validate before doing any work
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    state = session.capture_state()
+    if not _has_state(state):
+        return {
+            "ok": False,
+            "error": f"nothing to capture on {session.record.surface.value}: no cookies "
+                     "or web storage (either the surface has no session channel, or the "
+                     "app is not logged in yet)",
+        }
+    _write_state(name, state)
+    return {
+        "ok": True, "saved_as": name, **_state_summary(state),
+        "note": f"replay it on a later run with seed_state(session_id, name={name!r})",
+    }
+
+
+@mcp.tool(annotations=WRITE)
+@_friendly
+def seed_state(session_id: str, state: dict | None = None, name: str = "") -> StateResult:
+    """Install a captured session so the run starts logged in, before you test anything.
+
+    Pass `name` to replay a state saved by `capture_state`, or `state` to pass one inline
+    (the dict `capture_state` produced; inline wins if you pass both). The cookies are
+    placed, the app is sent to the state's origin, web storage is written and the app is
+    reloaded so it boots having read it — `ok=false` means that sequence did not complete
+    and the app is still logged out, which is worth knowing BEFORE you read every guarded
+    screen that follows as a bug.
+
+    The state is credentials: it is never logged, never written into the trace or the
+    repro steps, and never echoed back — the result describes it by counts only.
+    """
+    session = MANAGER.get(session_id)
+    if state is None and name:
+        try:
+            path = _state_path(name)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        try:
+            with open(path) as f:
+                state = json.load(f)
+        except FileNotFoundError:
+            return {"ok": False, "error": f"no saved state named {name!r} — "
+                                          "run capture_state on a logged-in session first"}
+        except (OSError, ValueError):
+            return {"ok": False, "error": f"saved state {name!r} is unreadable"}
+    if not isinstance(state, dict) or not _has_state(state):
+        return {"ok": False, "error": "pass `state` (from capture_state) or the `name` of "
+                                      "a saved one; an empty state would install nothing"}
+    ok = session.seed_state(state)
+    out = {"ok": ok, "seeded_from": name or "inline", **_state_summary(state)}
+    if not ok:
+        out["error"] = (f"{session.record.surface.value} did not install the session — "
+                        "the surface cannot seed state, or the navigation to its origin "
+                        "was refused; the app is still logged out")
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)

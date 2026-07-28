@@ -151,6 +151,49 @@ def network_findings(records, session_id: str = "", trace_id: str = "") -> list[
     return findings
 
 
+def observation_channels(session, labels=frozenset()) -> dict:
+    """Everything an assertion or an oracle can be judged against, gathered once.
+
+    Visible text, the element list, the current URL on CDP surfaces, control state for
+    the labels the caller asked about, and the network window this observation drained.
+    It is a free function over anything session-shaped (like `build_repro_spec`) so that
+    there is exactly ONE gatherer: `check_assertions` and re-verification used to keep
+    near-identical copies, which meant every new channel had to be added twice and an
+    oracle could be judged against a different set of facts at file time than at
+    re-verify time — the one comparison that has to be apples to apples.
+
+    `network` is None — not [] — on a surface with no tap, because the evaluator has to
+    tell "no request matched" (a real, checkable answer) from "this surface cannot see
+    requests at all", which may only ever be inconclusive.
+    """
+    _som, elements, _logs = session.observe()
+    texts = [e.label for e in elements if e.label]
+    try:
+        texts += [t.label for t in session.adapter.text_elements() if t.label]
+    except Exception:
+        pass
+    el = [{"label": e.label, "role": e.role} for e in elements]
+    url = None
+    cdp = getattr(session.adapter, "cdp", None)
+    if cdp is not None:
+        try:
+            v = cdp.evaluate("window.location.href")
+            url = v.strip('"') if isinstance(v, str) else v
+        except Exception:
+            url = None
+    want = {str(label).lower() for label in labels}
+    states: dict = {}
+    for e in elements:
+        lab = (e.label or "").lower()
+        if lab in want and lab not in states:
+            try:
+                states[lab] = session.adapter.control_state(e.id)
+            except Exception:
+                pass
+    network = getattr(session, "last_network", []) if supports_network(session.adapter) else None
+    return {"texts": texts, "elements": el, "url": url, "states": states, "network": network}
+
+
 def _problem_rank(rec: dict) -> tuple[int, int]:
     """Worst first: transport failures, then the highest status code."""
     status = rec.get("status")
@@ -467,43 +510,61 @@ class Session:
             new_ids.append(finding.id)
         return audit, new_ids
 
-    def observation_context(self, labels=frozenset()) -> dict:
-        """The channels assertions / oracles evaluate against: visible text, elements,
-        the current URL (CDP surfaces), control-state for the requested labels, and the
-        network window this observation just drained.
+    def set_viewport(self, width: int, height: int, mobile: bool = False) -> bool:
+        """Resize the app's viewport; False when the surface cannot do it.
 
-        `network` is None — not [] — on a surface with no tap, because the assertion
-        evaluator has to be able to tell "no request matched" (a real, checkable answer)
-        from "this surface cannot see requests at all" (which must stay inconclusive
-        rather than quietly passing an absence check nothing ever verified).
+        The last observation's elements are dropped on success, and that is the point
+        rather than tidiness: their boxes were measured against the OLD size, so a click
+        on `#4` after a resize to 375px would land wherever that fraction of the old
+        screen now falls. Far better that the next `act` refuses with "call observe first"
+        than that it silently clicks somewhere nobody asked for and the agent reads the
+        result as the app misbehaving.
         """
-        _som, elements, _logs = self.observe()
-        texts = [e.label for e in elements if e.label]
-        try:
-            texts += [t.label for t in self.adapter.text_elements() if t.label]
-        except Exception:
-            pass
-        el = [{"label": e.label, "role": e.role} for e in elements]
-        url = None
-        cdp = getattr(self.adapter, "cdp", None)
-        if cdp is not None:
+        self.touch()
+        with self._capture_lock:
             try:
-                v = cdp.evaluate("window.location.href")
-                url = v.strip('"') if isinstance(v, str) else v
+                ok = bool(self.adapter.set_viewport(int(width), int(height), mobile=mobile))
             except Exception:
-                url = None
-        want = {str(label).lower() for label in labels}
-        states: dict = {}
-        for e in elements:
-            lab = (e.label or "").lower()
-            if lab in want and lab not in states:
-                try:
-                    states[lab] = self.adapter.control_state(e.id)
-                except Exception:
-                    pass
-        network = self.last_network if supports_network(self.adapter) else None
-        return {"texts": texts, "elements": el, "url": url, "states": states,
-                "network": network}
+                return False
+        if ok:
+            self.last_elements = []
+        return ok
+
+    def capture_state(self) -> dict:
+        """Snapshot the app's session (cookies + web storage); `{}` when unsupported.
+
+        What comes back is credentials. It exists to be written to a file and replayed,
+        never to be shown: callers describe it by its counts, they do not print it.
+        """
+        self.touch()
+        with self._capture_lock:
+            try:
+                state = self.adapter.capture_state()
+            except Exception:
+                return {}
+        return state if isinstance(state, dict) else {}
+
+    def seed_state(self, state: dict) -> bool:
+        """Install a captured session into the running app; False when it did not take.
+
+        Nothing about `state` reaches the trace, the action log or a log line — it carries
+        session cookies and tokens, and the trace is written to disk and rendered into a
+        replay meant to be shared. The reload that seeding ends with invalidates the last
+        observation's element ids, so they go too, for the reason `set_viewport` explains.
+        """
+        self.touch()
+        with self._capture_lock:
+            try:
+                ok = bool(self.adapter.seed_state(state))
+            except Exception:
+                return False
+        if ok:
+            self.last_elements = []
+        return ok
+
+    def observation_context(self, labels=frozenset()) -> dict:
+        """The channels assertions / oracles evaluate against, for THIS session."""
+        return observation_channels(self, labels)
 
     # --- helpers ---
     def _resolve(
