@@ -18,7 +18,8 @@ from inspector.config import Config
 from inspector.dashboard.aggregate import scan_sessions
 from inspector.dashboard.render import render_index
 from inspector.models import ActionType, Element, SessionRecord, Surface
-from inspector.session import Session, SessionManager
+from inspector.session import Session, SessionManager, summarize_network
+from inspector.trace import TraceRecorder
 
 
 # --- 1. tool annotations (auto-approve safe, prompt on billed) ---------------
@@ -438,6 +439,137 @@ def test_act_docstring_lists_exactly_the_action_types_that_exist():
 def test_act_tool_rejects_an_unknown_type_by_naming_the_valid_ones():
     with pytest.raises(ValueError, match="click"):
         server._action_type("clic")
+
+
+# --- 15. the network channel: bounded at the boundary, findings for real failures ---
+
+def _rec(url, status=None, failed=False, error="", method="GET") -> dict:
+    """One record shaped exactly as CDPClient.drain_network returns them."""
+    return {"request_id": url, "method": method, "url": url, "resource_type": "xhr",
+            "status": status, "mime_type": "", "failed": failed, "error": error,
+            "duration_ms": 12}
+
+
+def test_network_summary_leads_with_failures_and_counts_the_rest():
+    records = [_rec(f"http://x/chunk{i}.js", 200) for i in range(40)]
+    records += [_rec("http://x/api/me", 404), _rec("http://x/api/items", 500),
+                _rec("http://x/api/save", failed=True, error="net::ERR_CONNECTION_REFUSED")]
+    out = summarize_network(records)
+    assert out["total"] == 43
+    # worst first: the transport failure, then 500, then 404 — the agent reads top-down
+    assert [p["url"] for p in out["problems"]] == [
+        "http://x/api/save", "http://x/api/items", "http://x/api/me"]
+    # the 40 that worked cost four tokens, not forty lines
+    assert out["ok"] == {"count": 40, "by_status": {"2xx": 40}}
+    assert all(p["status"] != 200 for p in out["problems"])
+
+
+def test_network_summary_caps_the_problem_list_and_admits_the_truncation():
+    out = summarize_network([_rec(f"http://x/api/{i}", 500) for i in range(30)], limit=5)
+    assert len(out["problems"]) == 5 and out["problems_omitted"] == 25
+
+
+def test_a_request_still_in_flight_is_counted_not_called_a_failure():
+    out = summarize_network([_rec("http://x/stream")])
+    assert out["pending"] == 1 and out["problems"] == [] and out["ok"]["count"] == 0
+
+
+def _finding_session(tmp_path) -> Session:
+    """A Session with only what the deterministic finding path touches."""
+    s = Session.__new__(Session)
+    s.record = SessionRecord(repo_path="/repo", surface=Surface.WEB)
+    s.trace = TraceRecorder(str(tmp_path), s.record.id)
+    s.adapter = SimpleNamespace(cdp=None)
+    s.action_log = []
+    s.last_assertions = []
+    s._seen_findings = set()
+    return s
+
+
+def _saved_findings(session) -> list[dict]:
+    names = sorted(os.listdir(session.trace.findings_dir))
+    out = []
+    for name in names:
+        with open(os.path.join(session.trace.findings_dir, name)) as f:
+            out.append(json.load(f))
+    return out
+
+
+def test_failed_and_5xx_requests_become_findings_with_a_repro_trail(tmp_path):
+    s = _finding_session(tmp_path)
+    s.action_log = ["click element #2 (Save)"]
+    new = s._ingest_findings([], [
+        _rec("http://x/api/save", failed=True, error="net::ERR_FAILED", method="post"),
+        _rec("http://x/api/items", 500),
+        _rec("http://x/api/me", 401),   # normal on an app you haven't logged into
+        _rec("http://x/main.js", 200),
+    ])
+    assert new == 2
+    saved = _saved_findings(s)
+    assert {f["severity"] for f in saved} == {"high"}
+    assert any("POST http://x/api/save failed" in f["summary"] for f in saved)
+    assert any("GET http://x/api/items returned 500" in f["summary"] for f in saved)
+    # the same treatment console errors get: a repro trail and a replayable spec
+    assert all(f["repro"] == ["click element #2 (Save)"] for f in saved)
+    assert all(f["repro_spec"]["steps"] for f in saved)
+
+
+def test_a_polled_broken_endpoint_files_one_finding_not_hundreds(tmp_path):
+    s = _finding_session(tmp_path)
+    first = s._ingest_findings([], [_rec("http://x/api/items?cursor=1", 500)])
+    again = s._ingest_findings([], [_rec("http://x/api/items?cursor=2", 503)])
+    assert first == 1 and again == 0
+
+
+def test_an_aborted_request_is_not_reported_as_a_bug(tmp_path):
+    s = _finding_session(tmp_path)
+    assert s._ingest_findings(
+        [], [_rec("http://x/api/search", failed=True, error="net::ERR_ABORTED")]) == 0
+
+
+class _NetAdapter(_StubAdapter):
+    """A surface that really taps traffic — it overrides the hook, the base stub doesn't."""
+
+    def network(self):
+        return []
+
+
+class _NetSession:
+    """Only what the observe tool reads off a live session."""
+
+    def __init__(self, adapter, network):
+        self.adapter = adapter
+        self.last_network = list(network)
+        self.record = SessionRecord(repo_path="/repo", surface=Surface.WEB)
+
+    def observe(self):
+        return b"png", [], []
+
+    def image_allowed(self):
+        return False
+
+    def touch(self):
+        pass
+
+
+def _observe_with(adapter, network) -> dict:
+    server.MANAGER.sessions["ses_net"] = _NetSession(adapter, network)
+    try:
+        return server.observe("ses_net", include_image=False)
+    finally:
+        server.MANAGER.sessions.pop("ses_net", None)
+
+
+def test_observe_returns_the_bounded_network_window():
+    out = _observe_with(_NetAdapter(), [_rec("http://x/api/items", 500),
+                                        _rec("http://x/main.js", 200)])
+    assert out["network"]["problems"][0]["status"] == 500
+    assert out["network"]["ok"]["count"] == 1
+
+
+def test_observe_omits_network_on_a_surface_that_cannot_see_traffic():
+    # absent is the honest answer: an empty summary would read as "no requests were made"
+    assert "network" not in _observe_with(_StubAdapter(), [])
 
 
 def test_live_sessions_provider_reads_the_manager():

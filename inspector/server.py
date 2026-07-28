@@ -20,7 +20,7 @@ from .config import Config
 from .findings import build_finding, build_repro_spec
 from .models import ActionType, SessionState, Severity, Surface
 from .plan import ScenarioStatus, build_plan
-from .session import SessionManager
+from .session import SessionManager, summarize_network, supports_network
 
 CONFIG = Config.from_env()
 MANAGER = SessionManager(CONFIG)
@@ -329,6 +329,7 @@ class SessionResult(TypedDict, total=False):
 class ObserveResult(TypedDict, total=False):
     elements: list[dict]
     logs_since_last: list[str]
+    network: dict
     state: str
     image_omitted: str
 
@@ -336,6 +337,7 @@ class ObserveResult(TypedDict, total=False):
 class ActResult(TypedDict, total=False):
     changed: bool
     logs: list[str]
+    network: dict
 
 
 class CheckResult(TypedDict, total=False):
@@ -478,6 +480,13 @@ def observe(session_id: str, include_image: bool = True) -> ObserveResult:
     as `target_id` to `act`. Each element carries its id/label/role/bbox, so you can
     ground from the text list alone. Set `include_image=false` (or hit the per-session
     image cap) to get text only and save host tokens.
+
+    `network` is the HTTP traffic since the previous call, on the surfaces that can see
+    it (web/Electron): every request that failed or answered 4xx/5xx listed worst-first,
+    and the successful remainder reduced to counts — a broken API is usually invisible in
+    both the screenshot and the console. The key is absent on surfaces with no such
+    channel, which is NOT the same as an empty one. Failed requests and 5xx responses are
+    also filed as findings automatically; see `get_findings`.
     """
     session = MANAGER.get(session_id)
     som, elements, logs = session.observe()
@@ -486,6 +495,8 @@ def observe(session_id: str, include_image: bool = True) -> ObserveResult:
         "logs_since_last": logs,
         "state": session.record.state.value,
     }
+    if supports_network(session.adapter):
+        data["network"] = summarize_network(session.last_network)
     if include_image and session.image_allowed():
         return _result(Image(data=som, format="png"), data)
     data["image_omitted"] = "text-only (set include_image=true or raise max_images_per_session)"
@@ -539,7 +550,8 @@ def act(
 
     The returned image is the screen *after* the action — this is verify-after-act. Set
     `include_image=false` (or hit the per-session image cap) to get `changed`+logs only
-    and save host tokens.
+    and save host tokens. `network` is the same bounded traffic summary `observe` returns,
+    for the window this action opened — which is where the request it triggered lands.
     """
     session = MANAGER.get(session_id)
     som, changed, logs = session.act(
@@ -547,6 +559,8 @@ def act(
         to_id=to_id, to_coords=to_coords, direction=direction, amount=amount, url=url,
     )
     data = {"changed": changed, "logs": logs}
+    if supports_network(session.adapter):
+        data["network"] = summarize_network(session.last_network)
     if include_image and session.image_allowed():
         return _result(Image(data=som, format="png"), data)
     data["image_omitted"] = "text-only (set include_image=true or raise max_images_per_session)"

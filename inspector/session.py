@@ -8,10 +8,20 @@ from .adapters import get_adapter
 from .adapters.base import InputAction, SurfaceAdapter, UnsupportedAction
 from .assertions import Assertion
 from .config import Config
-from .findings import build_repro_spec
+from .findings import build_finding, build_repro_spec
 from .launch.detect import detect_project
 from .loop import LoopGuard
-from .models import Action, ActionType, Element, SessionRecord, SessionState, Surface
+from .models import (
+    Action,
+    ActionType,
+    Confidence,
+    Element,
+    Finding,
+    SessionRecord,
+    SessionState,
+    Severity,
+    Surface,
+)
 from .perception.detector import OmniParserDetector
 from .paths import safe_repo_path
 from .perception.som import render_set_of_mark
@@ -51,6 +61,144 @@ def _scroll_amount(amount: int | None) -> int:
         return 1
 
 
+# How many failed/non-2xx requests one observation is allowed to put in the host agent's
+# context. A page load is easily eighty requests; the cap is on the interesting ones, and
+# anything past it is reported as a count so the truncation itself is never invisible.
+NETWORK_REPORT_LIMIT = 20
+# Transport failures that are ordinary app behaviour, not a bug: a request the app itself
+# aborted (a superseded autocomplete, a React StrictMode double-mount, an in-flight fetch
+# when the route changed). They are indistinguishable from a real failure in the CDP
+# record except by this text, and filing them would teach the reader to skip this channel.
+_BENIGN_NET_ERRORS = ("abort", "cancel")
+
+
+def supports_network(adapter) -> bool:
+    """Whether this surface actually taps network traffic, as opposed to having nothing.
+
+    `SurfaceAdapter.network()` returns `[]` by default, so an empty drain from a phone
+    (which has no tap at all) is byte-identical to an empty drain from a browser that
+    simply made no requests. Those two must never be reported the same way: the first has
+    to read as "this channel does not exist here", the second as the real observation that
+    it is. The only honest way to tell them apart is whether the surface overrode the hook.
+    """
+    try:
+        return type(adapter).network is not SurfaceAdapter.network
+    except Exception:
+        return False
+
+
+def _request_url(rec: dict, *, strip_query: bool = False) -> str:
+    url = str(rec.get("url") or "")
+    if strip_query:
+        url = url.split("?", 1)[0].split("#", 1)[0]
+    return url
+
+
+def _is_benign_failure(rec: dict) -> bool:
+    error = str(rec.get("error") or "").lower()
+    return any(token in error for token in _BENIGN_NET_ERRORS)
+
+
+def network_findings(records, session_id: str = "", trace_id: str = "") -> list[Finding]:
+    """Turn a drained network window into deterministic Findings.
+
+    Backend failures are the bugs a freshly built app is most likely to have and the ones
+    this tool was least able to see: a 500 from the handler that was just written, a fetch
+    the browser rejected on CORS, an endpoint that isn't served at all. None of them print
+    a console line and none of them change a pixel, so before this the log tap and the
+    screenshot both reported a clean run over a completely broken API.
+
+    Only two shapes qualify. A request that failed at the transport is one — there is no
+    reading of "the browser refused to complete this request" that is correct behaviour —
+    minus the aborts the app asked for itself. A 5xx is the other: the server said it broke.
+    4xx is deliberately excluded, because a 401 before login and a 404 for a missing
+    favicon are what a healthy app looks like; those still reach the agent through the
+    observation payload and can be asserted on explicitly, they just don't file a bug.
+    """
+    findings: list[Finding] = []
+    for rec in records or []:
+        status = rec.get("status")
+        failed = bool(rec.get("failed")) and not _is_benign_failure(rec)
+        server_error = isinstance(status, int) and status >= 500
+        if not failed and not server_error:
+            continue
+        method = str(rec.get("method") or "GET").upper()
+        # The summary is also the de-dup key (digits collapse to '#'), so it carries the
+        # route without the query string: a list polled with ?cursor=... every second is
+        # one bug, not one per poll. The untruncated URL stays on `actual`.
+        route = _request_url(rec, strip_query=True)[:200]
+        full = _request_url(rec)[:300]
+        if server_error:
+            summary = f"{method} {route} returned {status}"
+            detail = f"{method} {full} returned {status}"
+        else:
+            reason = str(rec.get("error") or "request failed")[:120]
+            summary = f"{method} {route} failed: {reason}"
+            detail = f"{method} {full} failed: {reason}"
+        findings.append(build_finding(
+            session_id=session_id,
+            trace_id=trace_id,
+            summary=summary,
+            expected=f"{method} {route} returns a successful response",
+            actual=detail,
+            severity=Severity.HIGH,
+            confidence=Confidence.HIGH,
+            # Prefixed so nothing downstream reads it as a console line — the two channels
+            # stay separate all the way to the finding, or a failure is counted twice.
+            logs=[f"[network] {detail}"],
+            suspected_area="(network tap)",
+        ))
+    return findings
+
+
+def _problem_rank(rec: dict) -> tuple[int, int]:
+    """Worst first: transport failures, then the highest status code."""
+    status = rec.get("status")
+    return (0 if rec.get("failed") else 1, -(status if isinstance(status, int) else 0))
+
+
+def summarize_network(records, limit: int = NETWORK_REPORT_LIMIT) -> dict:
+    """Reduce a drained network window to something safe to hand a host agent.
+
+    Everything returned here is spent out of the calling agent's context window, and the
+    raw channel is mostly fonts, chunks and images that all worked. So the shape is
+    deliberately asymmetric: requests that failed or answered 4xx/5xx are listed in full
+    and worst-first, and everything that succeeded collapses to counts by status class.
+    That keeps the signal at the top of the payload where it gets read, and it means a
+    quiet observation costs a handful of tokens instead of a hundred lines of 200s.
+    """
+    records = list(records or [])
+    problems: list[dict] = []
+    ok_by_status: dict[str, int] = {}
+    pending = 0
+    for rec in records:
+        status = rec.get("status")
+        if rec.get("failed") or (isinstance(status, int) and status >= 400):
+            problems.append(rec)
+        elif not isinstance(status, int):
+            pending += 1  # still in flight when the window closed
+        else:
+            key = f"{status // 100}xx"
+            ok_by_status[key] = ok_by_status.get(key, 0) + 1
+    problems.sort(key=_problem_rank)
+    out: dict = {
+        "total": len(records),
+        "problems": [{
+            "method": str(rec.get("method") or "GET").upper(),
+            "url": _request_url(rec)[:300],
+            "status": rec.get("status"),
+            "error": str(rec.get("error") or ""),
+            "duration_ms": rec.get("duration_ms"),
+        } for rec in problems[:limit]],
+        "ok": {"count": sum(ok_by_status.values()), "by_status": ok_by_status},
+    }
+    if len(problems) > limit:
+        out["problems_omitted"] = len(problems) - limit
+    if pending:
+        out["pending"] = pending
+    return out
+
+
 class Session:
     """A live verification session against one running app on one surface."""
 
@@ -70,6 +218,11 @@ class Session:
         # oracle-less report_issue) inherit it as their ReproSpec oracle via
         # build_repro_spec, so re-verification has a real check instead of nothing.
         self.last_assertions: list[Assertion] = []
+        # The network window the last observe/act drained. `adapter.network()` is a
+        # destructive read, so this session is its single owner: everything downstream
+        # (the observe payload, network assertions, the finding path) reads this list
+        # rather than draining again and getting an empty one.
+        self.last_network: list[dict] = []
         self._seen_findings: set[str] = set()  # de-dup signatures
         self.created_at = time.monotonic()
         self.touched_at = self.created_at  # last activity, for the reaper
@@ -179,8 +332,9 @@ class Session:
             som = render_set_of_mark(png, elements)
             self.trace.save_frame(som)
             logs = self.adapter.logs()
+            network = self._capture_network()
         self.trace.record_logs(logs)
-        self._ingest_findings(logs)
+        self._ingest_findings(logs, network)
         return som, elements, logs
 
     def act(
@@ -258,8 +412,9 @@ class Session:
             frame_after = self.trace.save_frame(after)
             changed = before != after
             logs = self.adapter.logs()
+            network = self._capture_network()
             self.trace.record_logs(logs)
-            new_findings = self._ingest_findings(logs)
+            new_findings = self._ingest_findings(logs, network)
             # a fresh error/finding counts as progress even if the screen looks the same —
             # a buggy toggle that doesn't repaint is a bug, not a reason to give up.
             self.guard.observe_state(after, signal=new_findings > 0)
@@ -314,7 +469,14 @@ class Session:
 
     def observation_context(self, labels=frozenset()) -> dict:
         """The channels assertions / oracles evaluate against: visible text, elements,
-        the current URL (CDP surfaces), and control-state for the requested labels."""
+        the current URL (CDP surfaces), control-state for the requested labels, and the
+        network window this observation just drained.
+
+        `network` is None — not [] — on a surface with no tap, because the assertion
+        evaluator has to be able to tell "no request matched" (a real, checkable answer)
+        from "this surface cannot see requests at all" (which must stay inconclusive
+        rather than quietly passing an absence check nothing ever verified).
+        """
         _som, elements, _logs = self.observe()
         texts = [e.label for e in elements if e.label]
         try:
@@ -339,7 +501,9 @@ class Session:
                     states[lab] = self.adapter.control_state(e.id)
                 except Exception:
                     pass
-        return {"texts": texts, "elements": el, "url": url, "states": states}
+        network = self.last_network if supports_network(self.adapter) else None
+        return {"texts": texts, "elements": el, "url": url, "states": states,
+                "network": network}
 
     # --- helpers ---
     def _resolve(
@@ -462,10 +626,32 @@ class Session:
             return f"({coords[0]}, {coords[1]})"
         return "(unknown)"
 
-    def _ingest_findings(self, logs: list[str]) -> int:
-        """Save new deterministic findings; return how many were new (for the guard)."""
+    def _capture_network(self) -> list[dict]:
+        """Drain the surface's network channel for this step. Call under the capture lock.
+
+        Degrades to an empty window rather than raising: a flaky transport must not turn
+        an otherwise good observation into a failed tool call, and the console tap and the
+        screenshot are still worth returning without it.
+        """
+        try:
+            records = self.adapter.network()
+        except Exception:
+            records = []
+        self.last_network = list(records or [])
+        return self.last_network
+
+    def _ingest_findings(self, logs: list[str], network: list[dict] | None = None) -> int:
+        """Save new deterministic findings; return how many were new (for the guard).
+
+        Two channels feed one path: crash/error lines from the log tap, and failed or 5xx
+        requests from the network tap. They share the de-dup set deliberately — a broken
+        endpoint that also logs a console error is ONE bug, and an app polling it every
+        second is still one bug rather than a finding per tick.
+        """
         new = 0
-        for finding in detection.scan_logs(logs, self.record.id, self.record.trace_id):
+        candidates = detection.scan_logs(logs, self.record.id, self.record.trace_id)
+        candidates += network_findings(network, self.record.id, self.record.trace_id)
+        for finding in candidates:
             sig = detection.finding_signature(finding)
             if sig in self._seen_findings:
                 continue  # de-dup repeats across observe/act calls
