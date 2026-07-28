@@ -10,6 +10,7 @@ from inspector.adapters.cdp_client import (
     DOM_AUDIT_EXPR,
     CDPClient,
     axe_source,
+    origin_of,
     parse_dom_elements,
 )
 from inspector.adapters.local_electron import LocalElectronAdapter
@@ -638,6 +639,275 @@ def test_clear_viewport_re_reads_the_real_size():
     a.cdp.eval_value = json.dumps([1280, 800])
     assert a.clear_viewport() is True
     assert a.cdp.cleared == 1 and a.screen_size() == (1280, 800)
+
+
+# --- session state (without it every run starts logged out and re-drives the login UI) ---
+
+class _StateCDP(CDPClient):
+    """CDPClient with the socket swapped for a toy browser: a cookie jar and a real pair
+    of stores. The REAL CookieParam projection and the REAL storage expressions run
+    against it, so the round trip is exercised rather than asserted about."""
+
+    def __init__(self, url="http://localhost:3000/app", local=None, session=None,
+                 storage_error=""):
+        self.url = url
+        self.local = dict(local or {})
+        self.session = dict(session or {})
+        self.jar: list[dict] = []
+        self.sent: list[tuple[str, dict]] = []
+        self.storage_error = storage_error
+
+    def current_url(self): return self.url
+
+    def _cmd(self, method, params=None):
+        self.sent.append((method, params or {}))
+        return {"cookies": [dict(c) for c in self.jar]} if method == "Network.getCookies" else {}
+
+    def _cmd_ok(self, method, params=None):
+        self.sent.append((method, params or {}))
+        if method == "Network.setCookies":
+            for c in (params or {}).get("cookies", []):
+                if {"size", "session"} & set(c):     # CookieParam has no such fields
+                    return False                     # → CDP rejects the whole batch
+                self.jar.append(dict(c))
+        return True
+
+    def evaluate(self, expr, await_promise=False):
+        from inspector.adapters.cdp_client import STORAGE_READ_JS
+        if expr == STORAGE_READ_JS:
+            return json.dumps({"local": self.local, "session": self.session})
+        if self.storage_error:
+            return self.storage_error
+        local, session = _write_args(expr)
+        self.local.update(local)
+        self.session.update(session)
+        return ""
+
+
+def _write_args(expr):
+    """Pull the two JSON object literals back out of a storage-write expression."""
+    from inspector.adapters.cdp_client import STORAGE_WRITE_FN
+    args = expr[len(STORAGE_WRITE_FN) + 1:-1]
+    dec = json.JSONDecoder()
+    local, end = dec.raw_decode(args)
+    session, _ = dec.raw_decode(args[end + 1:])
+    return local, session
+
+
+def test_set_cookies_projects_a_captured_cookie_onto_what_cdp_accepts():
+    # getCookies hands back `Cookie`, setCookies wants `CookieParam`: `size`/`session` are
+    # output-only and make the browser reject the WHOLE batch, and expires=-1 (how a
+    # session cookie is reported) reads back as an expiry in 1969.
+    cdp = _StateCDP()
+    captured = {"name": "sid", "value": "abc123", "domain": "localhost", "path": "/",
+                "httpOnly": True, "secure": False, "sameSite": "Lax",
+                "expires": -1, "size": 9, "session": True}
+    assert CDPClient.set_cookies(cdp, [captured]) is True
+    placed = cdp.jar[0]
+    assert placed == {"name": "sid", "value": "abc123", "domain": "localhost", "path": "/",
+                      "httpOnly": True, "secure": False, "sameSite": "Lax"}
+    assert "expires" not in placed and "size" not in placed and "session" not in placed
+
+
+def test_set_cookies_keeps_a_real_expiry_and_refuses_unplaceable_records():
+    cdp = _StateCDP()
+    assert CDPClient.set_cookies(cdp, [{"name": "sid", "value": "v", "url": "http://a/",
+                                        "expires": 1893456000}]) is True
+    assert cdp.jar[0]["expires"] == 1893456000
+    fresh = _StateCDP()
+    assert CDPClient.set_cookies(fresh, []) is False
+    assert CDPClient.set_cookies(fresh, [{"value": "v", "domain": "a"}]) is False  # no name
+    assert CDPClient.set_cookies(fresh, [{"name": "sid", "value": "v"}]) is False  # no origin
+    assert fresh.sent == []                     # nothing usable → nothing sent
+
+
+def test_get_cookies_returns_the_browsers_view_including_httponly():
+    cdp = _StateCDP()
+    cdp.jar = [{"name": "sid", "value": "abc", "domain": "localhost", "httpOnly": True}]
+    got = CDPClient.get_cookies(cdp)
+    assert got[0]["httpOnly"] is True           # the one document.cookie cannot see
+    assert CDPClient.get_cookies(_NavCDP()) == []          # dead socket → neutral empty
+
+
+def test_storage_round_trips_through_the_page():
+    cdp = _StateCDP()
+    assert CDPClient.set_storage(cdp, "http://localhost:3000",
+                                 local={"token": 'ey."J\\x', "n": 7},
+                                 session={"step": "2"}) is True
+    out = CDPClient.get_storage(cdp, "http://localhost:3000")
+    assert out["local"] == {"token": 'ey."J\\x', "n": "7"}   # non-strings stored as JSON
+    assert out["session"] == {"step": "2"}
+
+
+def test_set_storage_refuses_to_write_into_the_wrong_origin():
+    # Writing the seed into whatever page happens to be on screen is the silent failure
+    # worth a guard: nothing errors, the app boots logged out anyway.
+    cdp = _StateCDP(url="http://localhost:3001/other")
+    assert CDPClient.set_storage(cdp, "http://localhost:3000", local={"token": "t"}) is False
+    assert cdp.local == {}
+    assert CDPClient.set_storage(cdp, "http://localhost:3000") is True   # nothing asked for
+
+
+def test_set_storage_reports_an_origin_that_cannot_store():
+    cdp = _StateCDP(storage_error="localStorage: SecurityError")
+    assert CDPClient.set_storage(cdp, "", local={"token": "t"}) is False
+
+
+def test_get_storage_refuses_to_hand_back_another_pages_state():
+    cdp = _StateCDP(url="http://localhost:3001/other", local={"token": "t"})
+    assert CDPClient.get_storage(cdp, "http://localhost:3000") == {}
+    assert CDPClient.get_storage(cdp)["local"] == {"token": "t"}   # '' = wherever we are
+    assert CDPClient.get_storage(_NavCDP()) == {}                  # dead socket → neutral
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_the_real_storage_expressions_round_trip_awkward_values(tmp_path):
+    """Run the REAL write and read expressions under node against a Storage stub: a token
+    with quotes, a backslash and a newline in it must come back byte-identical, since that
+    is exactly what a JWT-ish value looks like and what naive string building destroys."""
+    from inspector.adapters.cdp_client import STORAGE_READ_JS, _storage_write_js
+    values = {"token": 'ab"c\\d\ne', "u": "{\"id\":1}", "emoji": "ok ✅"}
+    stub = r"""
+class Store {
+  constructor(){ this.m = new Map(); }
+  get length(){ return this.m.size; }
+  key(i){ return [...this.m.keys()][i]; }
+  getItem(k){ const v = this.m.get(k); return v === undefined ? null : v; }
+  setItem(k, v){ this.m.set(String(k), String(v)); }
+}
+global.localStorage = new Store();
+global.sessionStorage = new Store();
+"""
+    f = tmp_path / "storage_expr.cjs"
+    f.write_text(stub + "const err = " + _storage_write_js(values, {"step": "2"}) + ";\n"
+                 + "console.log(JSON.stringify({ err, read: JSON.parse(" + STORAGE_READ_JS
+                 + ") }));\n")
+    res = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=20)
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout.strip().splitlines()[-1])
+    assert out["err"] == ""
+    assert out["read"]["local"] == values
+    assert out["read"]["session"] == {"step": "2"}
+
+
+class _StateCDPStub:
+    """Adapter-facing fake browser — a cookie jar, two stores and a call log, so the
+    ordering `seed_state` has to enforce is directly observable. `set_storage` asserts
+    the precondition the real client enforces, so seeding before navigating BLOWS UP
+    here rather than passing quietly the way it would in a real browser."""
+
+    def __init__(self, url="about:blank", ok=True):
+        self.url = url
+        self.ok = ok
+        self.jar: list[dict] = []
+        self.local: dict = {}
+        self.session: dict = {}
+        self.calls: list[str] = []
+
+    def current_url(self): return self.url
+    def evaluate(self, expr, await_promise=False): return json.dumps([1280, 800])
+
+    def get_cookies(self, urls=None):
+        self.calls.append("get_cookies")
+        return [dict(c) for c in self.jar]
+
+    def get_storage(self, origin=""):
+        self.calls.append("get_storage")
+        return {"local": dict(self.local), "session": dict(self.session)}
+
+    def set_cookies(self, cookies):
+        self.calls.append("set_cookies")
+        if not self.ok:
+            return False
+        self.jar = [dict(c) for c in cookies]
+        return True
+
+    def set_storage(self, origin, local=None, session=None):
+        self.calls.append("set_storage")
+        assert origin_of(origin) == origin_of(self.url), "seeded storage before navigating"
+        if not self.ok:
+            return False
+        self.local.update(local or {})
+        self.session.update(session or {})
+        return True
+
+    def navigate(self, url):
+        self.calls.append("navigate")
+        if not self.ok:
+            return False
+        self.url = url
+        return True
+
+    def reload(self):
+        self.calls.append("reload")
+        return self.ok
+
+
+def _state():
+    return {"origin": "http://localhost:3000",
+            "cookies": [{"name": "sid", "value": "abc", "domain": "localhost"}],
+            "local_storage": {"token": "ey.J"}, "session_storage": {"step": "2"}}
+
+
+def test_seed_state_sets_cookies_navigates_seeds_storage_then_reloads():
+    # The ordering IS the feature: storage written before the navigation lands in
+    # about:blank's store and is silently thrown away, and without the trailing reload the
+    # app is still showing the render it did with an empty store.
+    a = _adapter(_StateCDPStub(url="about:blank"))
+    assert a.seed_state(_state()) is True
+    assert a.cdp.calls == ["set_cookies", "navigate", "set_storage", "reload"]
+    assert a.cdp.url == "http://localhost:3000"
+    assert a.cdp.local == {"token": "ey.J"} and a.cdp.session == {"step": "2"}
+    assert a.cdp.jar[0]["name"] == "sid"
+
+
+def test_seed_state_skips_the_navigation_when_already_on_the_origin():
+    a = _adapter(_StateCDPStub(url="http://localhost:3000/items"))
+    assert a.seed_state({"origin": "http://localhost:3000",
+                         "local_storage": {"token": "t"}}) is True
+    assert a.cdp.calls == ["set_storage", "reload"]
+    assert a.cdp.url == "http://localhost:3000/items"      # stays where the caller was
+
+
+def test_seed_state_stops_when_it_cannot_reach_the_origin():
+    a = _adapter(_StateCDPStub(url="about:blank", ok=False))
+    assert a.seed_state(_state()) is False
+    assert "set_storage" not in a.cdp.calls      # never seed into the wrong origin
+    assert a.cdp.local == {}
+
+
+def test_capture_state_round_trips_through_seed_state():
+    src = _StateCDPStub(url="http://localhost:3000/dashboard")
+    src.jar = [{"name": "sid", "value": "abc", "domain": "localhost", "path": "/",
+                "httpOnly": True}]
+    src.local = {"token": "ey.J", "theme": "dark"}
+    src.session = {"step": "2"}
+    state = _adapter(src).capture_state()
+    assert state["origin"] == "http://localhost:3000"
+    assert json.loads(json.dumps(state)) == state        # survives a trip through a file
+
+    fresh = _adapter(_StateCDPStub(url="about:blank"))
+    assert fresh.seed_state(state) is True
+    assert fresh.capture_state() == state                # the session came back intact
+
+
+def test_seed_state_reports_unsupported_instead_of_claiming_success():
+    from inspector.adapters.base import SurfaceAdapter
+    a = _adapter(_StateCDPStub())
+    a.cdp = None
+    assert a.seed_state(_state()) is False and a.capture_state() == {}
+    # a surface with no session capability at all answers the same way, and must never
+    # answer True: a caller told "seeded" reads every logged-out screen as an app bug.
+    assert SurfaceAdapter.seed_state(a, _state()) is False
+    assert SurfaceAdapter.capture_state(a) == {}
+
+
+def test_seed_state_refuses_a_state_that_would_install_nothing():
+    a = _adapter(_StateCDPStub())
+    assert a.seed_state({}) is False
+    assert a.seed_state({"origin": "http://localhost:3000"}) is False
+    assert a.seed_state("not a dict") is False
+    assert a.cdp.calls == []
 
 
 def test_get_adapter_local_vs_vm_electron():

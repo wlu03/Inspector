@@ -77,6 +77,62 @@ def test_local_web_can_route_and_resize():
     assert a.screen_size() == (375, 667)            # clicks follow the resize
 
 
+def test_local_web_can_seed_and_capture_a_session():
+    """Web is where auth lives: without seeding, every run of a real app starts on the
+    login screen and spends its iteration budget getting past it. The local Chrome
+    adapter must inherit the CDP session hooks, not the base class's honest 'cannot'."""
+    for name in ("seed_state", "capture_state"):
+        assert getattr(LocalWebAdapter, name) is getattr(LocalElectronAdapter, name)
+        assert getattr(LocalWebAdapter, name) is not getattr(SurfaceAdapter, name)
+
+    a = LocalWebAdapter(Config())
+    assert a.capture_state() == {}                  # no CDP session yet → nothing to say
+    assert a.seed_state(_STATE) is False            # ...and it says so rather than lying
+
+    a.cdp = _SessionCDP("http://localhost:3000/login")
+    assert a.seed_state(_STATE) is True
+    assert a.cdp.calls == ["set_cookies", "set_storage", "reload"]   # already on the origin
+    assert a.capture_state() == _STATE
+
+
+_STATE = {"origin": "http://localhost:3000",
+          "cookies": [{"name": "sid", "value": "abc", "domain": "localhost"}],
+          "local_storage": {"token": "ey.J"}, "session_storage": {}}
+
+
+class _SessionCDP:
+    def __init__(self, url):
+        self.url = url
+        self.jar: list[dict] = []
+        self.local: dict = {}
+        self.session: dict = {}
+        self.calls: list[str] = []
+
+    def current_url(self):
+        return self.url
+
+    def get_cookies(self, urls=None):
+        return [dict(c) for c in self.jar]
+
+    def get_storage(self, origin=""):
+        return {"local": dict(self.local), "session": dict(self.session)}
+
+    def set_cookies(self, cookies):
+        self.calls.append("set_cookies")
+        self.jar = [dict(c) for c in cookies]
+        return True
+
+    def set_storage(self, origin, local=None, session=None):
+        self.calls.append("set_storage")
+        self.local.update(local or {})
+        self.session.update(session or {})
+        return True
+
+    def reload(self):
+        self.calls.append("reload")
+        return True
+
+
 class _NavigatingCDP:
     def __init__(self, url):
         self.url = url

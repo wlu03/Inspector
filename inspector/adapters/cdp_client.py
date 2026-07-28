@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import time
+import urllib.parse
 
 from ..models import Element
 
@@ -199,6 +201,105 @@ def parse_dom_elements(raw, vw: int, vh: int) -> list[Element]:
             interactivity=True, source="dom",
         ))
     return out
+
+
+# Reads BOTH web storages back as a JSON string. The stores are read through the same
+# API the app itself uses, so what a capture records is exactly what the app would have
+# found there — and each store is caught separately, because an origin can have one of
+# them blocked (a sandboxed document, third-party storage partitioning) while the other
+# answers normally, and a captured half is worth more than a captured nothing.
+STORAGE_READ_JS = r"""(function(){
+  const out = { local: {}, session: {} };
+  try { for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i); out.local[k] = localStorage.getItem(k); } } catch (e) {}
+  try { for (let i = 0; i < sessionStorage.length; i++) {
+    const k = sessionStorage.key(i); out.session[k] = sessionStorage.getItem(k); } } catch (e) {}
+  return JSON.stringify(out);
+})()"""
+
+# The write half, as a function literal that `_storage_write_js` applies to two JSON
+# object literals. It returns '' or the reason it could not write, rather than throwing:
+# a seed that lands in an origin whose storage is blocked must be REPORTED, since the
+# only other symptom is an app that quietly renders logged out.
+STORAGE_WRITE_FN = r"""(function(l, s){
+  try { for (const k in l) localStorage.setItem(k, l[k]); }
+  catch (e) { return 'localStorage: ' + ((e && e.message) || e); }
+  try { for (const k in s) sessionStorage.setItem(k, s[k]); }
+  catch (e) { return 'sessionStorage: ' + ((e && e.message) || e); }
+  return '';
+})"""
+
+
+def _storage_write_js(local: dict, session: dict) -> str:
+    """Apply STORAGE_WRITE_FN to these two stores, embedding them as JSON literals.
+
+    JSON is a subset of JS object-literal syntax, so `json.dumps` is also a correct
+    JS-literal serializer — and it is the only safe way to get a session token into the
+    expression. Tokens routinely contain quotes, backslashes and (base64url) characters
+    that would end the string early if the expression were concatenated by hand, which
+    corrupts the very value the app is about to read back.
+    """
+    return f"{STORAGE_WRITE_FN}({json.dumps(local)},{json.dumps(session)})"
+
+
+def _storage_values(items) -> dict:
+    """Normalise one store to the {str: str} shape the DOM actually holds.
+
+    `setItem` stringifies whatever it is handed, and for a dict that means the literal
+    '[object Object]' — a silently destroyed value. Anything that isn't already a string
+    is therefore serialised as JSON here, which is what an app that stored structured
+    state would have written in the first place.
+    """
+    if not isinstance(items, dict):
+        return {}
+    return {str(k): (v if isinstance(v, str) else json.dumps(v)) for k, v in items.items()}
+
+
+# Cookies come OUT of Network.getCookies as `Cookie` and go back IN as `CookieParam`, and
+# the shapes are not the same: `size` and `session` exist only on the way out, and CDP
+# rejects the whole setCookies batch when it sees a field it does not know. Replaying a
+# captured session therefore has to project every record onto the keys the browser will
+# accept, or the seed fails wholesale and the run silently starts logged out.
+_COOKIE_PARAM_KEYS = ("name", "value", "url", "domain", "path", "secure", "httpOnly",
+                      "sameSite", "expires", "priority", "sameParty", "sourceScheme",
+                      "sourcePort", "partitionKey")
+
+
+def _cookie_param(cookie) -> dict | None:
+    """Project one captured cookie onto CookieParam, or None if it is unusable."""
+    if not isinstance(cookie, dict) or not cookie.get("name"):
+        return None
+    out = {k: cookie[k] for k in _COOKIE_PARAM_KEYS if cookie.get(k) is not None}
+    out["name"] = str(out["name"])
+    out["value"] = str(out.get("value", ""))
+    # A session cookie is REPORTED with expires = -1, but that is not a timestamp the
+    # browser will take back — it reads as an expiry in 1969 and the cookie is dropped on
+    # arrival. Omitting the key is what "expires when the browser closes" means on the way
+    # in, and session cookies are exactly the ones an auth flow tends to use.
+    exp = out.get("expires")
+    if not isinstance(exp, (int, float)) or isinstance(exp, bool) or exp <= 0:
+        out.pop("expires", None)
+    if not out.get("url") and not out.get("domain"):
+        return None  # the browser has no way to decide which origin it belongs to
+    return out
+
+
+def origin_of(url: str) -> str:
+    """scheme://host[:port] for `url`, lowercased, or '' when it has no shareable origin.
+
+    This is the identity that decides whether state we are about to write will be visible
+    to the app: http://localhost:3000/items and http://localhost:3000/login share a
+    localStorage, http://localhost:3001 does not. A document with no scheme+host
+    (about:blank, a file:// bundle, '') has no origin others can share, and gets '' —
+    callers treat that as "unknown", never as "matches".
+    """
+    try:
+        parts = urllib.parse.urlsplit(url or "")
+    except Exception:
+        return ""
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
 
 
 # A chatty SPA can issue thousands of requests between two drains (polling, analytics,
@@ -595,6 +696,88 @@ class CDPClient:
         self._cmd_ok("Emulation.setTouchEmulationEnabled", {"enabled": False,
                                                             "maxTouchPoints": 0})
         return ok
+
+    def set_cookies(self, cookies) -> bool:
+        """Install cookies into the browser, ideally BEFORE the app is loaded.
+
+        Cookies are the usual carrier of a session, and unlike web storage they are keyed
+        by domain rather than by the document on screen — so they can, and should, be set
+        while the page is still on about:blank. The app's very first request then already
+        carries the session and the login redirect never happens, which is the difference
+        between a run that starts at the feature under test and one that spends its
+        iteration budget clicking through a login form.
+
+        False when nothing usable was in the batch (no name, or no url/domain to attach it
+        to) or the browser refused it. Records are projected through `_cookie_param` first
+        — see there for why a straight round trip of getCookies output does not work.
+        """
+        params = [p for p in (_cookie_param(c) for c in (cookies or [])) if p]
+        if not params:
+            return False
+        return self._cmd_ok("Network.setCookies", {"cookies": params})
+
+    def get_cookies(self, urls: list[str] | None = None) -> list[dict]:
+        """Every cookie visible to the current page (or to `urls`), as CDP reports them.
+
+        Read over CDP rather than out of `document.cookie` precisely because the session
+        cookie an app cares about is usually httpOnly, which the page cannot see at all —
+        a capture built from JS would look complete and replay as a logged-out session.
+        Records are returned unmodified so the capture keeps secure/sameSite/expiry too.
+        `[]` on a dead socket, like every other read here.
+        """
+        res = self._cmd("Network.getCookies", {"urls": urls} if urls else {})
+        found = res.get("cookies") if isinstance(res, dict) else None
+        return [c for c in found if isinstance(c, dict)] if isinstance(found, list) else []
+
+    def set_storage(self, origin: str, local: dict | None = None,
+                    session: dict | None = None) -> bool:
+        """Write local/sessionStorage — into a page that is ALREADY ON `origin`.
+
+        Both stores are partitioned by origin and the only handle on an origin's store is
+        a document loaded from it, so this refuses when the page is somewhere else instead
+        of writing into whatever happens to be on screen. That guard is worth its weight:
+        seeding the wrong origin raises nothing, logs nothing and leaves the app booting
+        logged out, and the agent then spends the run hunting a bug in a login flow that
+        works fine. Callers should go through `SurfaceAdapter.seed_state`, which owns the
+        navigate → seed → reload ordering this precondition implies.
+
+        An empty seed is vacuously done (True). `origin=''` means "wherever we are", which
+        is the only thing a document without a shareable origin can be told.
+        """
+        local, session = _storage_values(local), _storage_values(session)
+        if not local and not session:
+            return True
+        here = origin_of(self.current_url())
+        want = origin_of(origin)
+        if want and want != here:
+            logging.getLogger("inspector").warning(
+                "storage seed refused: asked for %s but the page is on %s", want, here or "?")
+            return False
+        err = self.evaluate(_storage_write_js(local, session))
+        if err:
+            logging.getLogger("inspector").warning("storage seed failed: %s", err)
+        return err == ""
+
+    def get_storage(self, origin: str = "") -> dict:
+        """Read both web storages back as {'local': {...}, 'session': {...}}.
+
+        `origin` is a precondition, not a selector — there is no way to read another
+        origin's store from this page — so a mismatch answers `{}` rather than quietly
+        handing back the state of whatever is on screen, which would be written into a
+        state file and replayed later as if it were the session that was captured. Pass
+        '' (the default) for "whatever this page is", which is what a capture wants.
+        `{}` too on a dead socket or an unparseable payload.
+        """
+        if origin and origin_of(origin) != origin_of(self.current_url()):
+            return {}
+        try:
+            raw = self.evaluate(STORAGE_READ_JS)
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {"local": data.get("local") or {}, "session": data.get("session") or {}}
 
     def evaluate(self, expr: str, await_promise: bool = False):
         r = self._cmd("Runtime.evaluate",

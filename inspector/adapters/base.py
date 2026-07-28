@@ -130,6 +130,34 @@ class SurfaceAdapter(ABC):
         """
         return False
 
+    def seed_state(self, state: dict) -> bool:
+        """Install a previously captured session before the app is tested.
+
+        Every session otherwise starts logged out, and on any app with auth that means
+        clicking through the login UI on every single run — slow, brittle, and it burns a
+        30-iteration budget before reaching the feature that was actually built. Seeding
+        turns "log in, then test" into "test", and makes a captured session replayable.
+
+        `state` is the plain dict `capture_state` returns — {origin, cookies,
+        local_storage, session_storage} — so it round-trips through a file unchanged.
+
+        The default is False, NOT a silent no-op, for the same reason as `navigate`: a
+        surface that cannot seed has to SAY so, because a caller told "seeded" will read
+        every logged-out screen that follows as a bug in the app rather than as a session
+        that was never installed.
+        """
+        return False
+
+    def capture_state(self) -> dict:
+        """Snapshot the current session as a JSON-serialisable dict; `{}` if unsupported.
+
+        The other half of `seed_state`: log in once by hand, capture, keep the dict, and
+        every later run starts authenticated. `{}` is the honest empty answer for a
+        surface with no session to capture — it is also what a caller should refuse to
+        write to a state file, since seeding it back would install nothing.
+        """
+        return {}
+
     def detect_elements(self, screenshot: bytes) -> list[Element] | None:
         """Optional native element source (the accessibility tree).
 

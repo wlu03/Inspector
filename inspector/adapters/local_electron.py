@@ -24,6 +24,7 @@ from .cdp_client import (
     DOM_ELEMENTS_JS,
     DOM_TEXT_JS,
     CDPClient,
+    origin_of,
     parse_dom_elements,
     parse_text_elements,
 )
@@ -251,6 +252,68 @@ class LocalElectronAdapter(SurfaceAdapter):
         ok = self.cdp.clear_viewport_override()
         self._refresh_viewport()
         return ok
+
+    def capture_state(self) -> dict:
+        """Snapshot the live session as {origin, cookies, local_storage, session_storage}.
+
+        Deliberately a dumb flat dict of JSON values: its whole worth is that it outlives
+        the process, so the agent (or the user) logs in ONCE, writes this to a file, and
+        every later run replays it instead of driving the login form again.
+
+        `origin` is read off the live page rather than taken on trust, because it is the
+        address `seed_state` navigates to when replaying — storage recorded under the
+        wrong origin is invisible to the app and fails without a sound.
+        """
+        if not self.cdp:
+            return {}
+        origin = origin_of(self.cdp.current_url())
+        storage = self.cdp.get_storage(origin)
+        return {
+            "origin": origin,
+            "cookies": self.cdp.get_cookies(),
+            "local_storage": storage.get("local", {}),
+            "session_storage": storage.get("session", {}),
+        }
+
+    def seed_state(self, state: dict) -> bool:
+        """Replay a captured session, in the one order that actually works.
+
+        cookies → navigate(origin) → local/sessionStorage → reload, and every step of that
+        sequence is load-bearing:
+
+        * Cookies go FIRST because they are keyed by domain rather than by the document on
+          screen, so setting them before the app loads means its first request is already
+          authenticated and no login redirect ever happens.
+        * Storage cannot go first. Both stores are partitioned by origin and the only
+          handle on an origin's store is a document loaded from it, so a write issued on
+          about:blank lands in a store the app will never read — and raises nothing.
+        * The reload is not cosmetic. The navigation above booted the app WITHOUT the
+          storage, so it read an empty store and rendered logged out; only the second load
+          sees the seeded state. Reading a token in a module-level initialiser is the norm
+          in the apps this tool is pointed at, not an edge case.
+
+        The ordering lives in here rather than in the caller precisely because getting it
+        wrong fails silently — no error, no exception, just an app that is still logged
+        out, which a caller cannot tell apart from a state file that had simply gone
+        stale. True means the app is now running with this session installed, so the
+        reload is part of the verdict; a False leaves the caller free to fall back to
+        driving the login UI. Inherited unchanged by LocalWebAdapter.
+        """
+        if not self.cdp or not isinstance(state, dict):
+            return False
+        cookies = state.get("cookies") or []
+        local = state.get("local_storage") or {}
+        session = state.get("session_storage") or {}
+        origin = str(state.get("origin") or "")
+        if not cookies and not local and not session:
+            return False  # nothing to install; saying True would be a lie
+        ok = self.cdp.set_cookies(cookies) if cookies else True
+        if origin and origin_of(origin) != origin_of(self.cdp.current_url()):
+            if not self.navigate(origin):
+                return False  # never seed storage into the origin we happen to be on
+        if local or session:
+            ok = self.cdp.set_storage(origin, local=local, session=session) and ok
+        return self.reload() and ok
 
     def logs(self) -> list[str]:
         return self.cdp.drain_console() if self.cdp else []
