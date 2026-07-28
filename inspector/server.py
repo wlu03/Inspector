@@ -34,14 +34,25 @@ INSTRUCTIONS = (
     "one-call autonomous run).\n"
     "2. observe(session_id) -> Set-of-Mark screenshot + numbered elements + logs.\n"
     "3. act(session_id, target_id=..., ...) using an element id from observe.\n"
-    "4. check(session_id, expectation) for new runtime errors (failed | unknown); audit_dom for "
-    "deterministic a11y / broken-image / unlabeled-input findings (web/Electron).\n"
-    "5. get_findings(session_id) for evidence-backed results.\n"
+    "4. check_assertions(session_id, assertions) to evaluate typed expectations "
+    "(pass | fail | inconclusive); check(session_id, expectation) for new runtime errors "
+    "(failed | unknown); audit_dom for deterministic a11y / broken-image / unlabeled-input "
+    "findings (web/Electron).\n"
+    "5. report_issue(session_id, summary, assertions=[...]) for anything you SAW that the "
+    "tools missed — those assertions are the finding's oracle, i.e. the CORRECT behavior "
+    "that will pass once the bug is fixed. get_findings(session_id) for evidence-backed "
+    "results.\n"
     "6. stop(session_id) to tear down the sandbox and write the replay (returns a "
     "dashboard link).\n\n"
-    "Fix loop: fix_finding / verify_fix / bug_ledger. Devin auto-fix: fix_with_devin / "
-    "devin_status. Cross-run history: list_runs / get_run and the inspector://sessions "
-    "resources.\n\n"
+    "Fix loop: edit the code, mark the finding with update_finding_status(session_id, "
+    "finding_id, 'fixed'), then verify_fix(session_id, finding_id) — it relaunches the "
+    "app, replays the finding's repro and re-evaluates its oracle (fixed | still_present "
+    "| not_run). Mark it 'verified' once that comes back fixed.\n\n"
+    "The default `core` profile exposes 13 tools; INSPECTOR_PROFILE=full adds the other "
+    "13: fix_finding / bug_ledger, the dashboard (open_dashboard / build_dashboard), "
+    "cross-run history (list_runs / get_run), test plans (set_plan / update_scenario / "
+    "test_report), test_app_parallel / test_feature, and Devin auto-fix (fix_with_devin / "
+    "devin_status). The inspector://sessions resources are always available.\n\n"
     "Setup: only REPLICATE_API_TOKEN (the detector) is required; E2B is optional. Host "
     "execution is refused over the HTTP transport without INSPECTOR_ALLOW_UNSAFE_LOCAL."
 )
@@ -58,17 +69,21 @@ DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorl
 # EXTERNAL = reaches a third-party service (Devin) and records its result — not read-only.
 EXTERNAL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
 
-# Default 'core' tool surface (INSPECTOR_PROFILE=core). The rest are advanced/admin
-# tools, hidden unless INSPECTOR_PROFILE=full.
+# Default 'core' tool surface (INSPECTOR_PROFILE=core). It has to carry the whole
+# find -> fix -> re-verify loop the server is for, so update_finding_status and
+# verify_fix are core: without them an agent can file a finding and then has no way
+# to ever close it. The rest are advanced/admin tools, hidden unless
+# INSPECTOR_PROFILE=full — fix_finding only re-serves finding data get_findings
+# already returned, and bug_ledger is cross-run reporting, not part of the loop.
 CORE_TOOLS = frozenset({
     "launch_app", "launch_status", "observe", "act", "check", "audit_dom",
     "report_issue", "get_findings", "stop", "test_app", "check_assertions",
+    "update_finding_status", "verify_fix",
 })
 ADVANCED_TOOLS = frozenset({
-    "update_finding_status", "open_dashboard", "build_dashboard", "list_runs",
-    "get_run", "fix_finding", "verify_fix", "bug_ledger", "fix_with_devin",
-    "devin_status", "test_app_parallel", "test_feature", "set_plan",
-    "update_scenario", "test_report",
+    "open_dashboard", "build_dashboard", "list_runs", "get_run", "fix_finding",
+    "bug_ledger", "fix_with_devin", "devin_status", "test_app_parallel",
+    "test_feature", "set_plan", "update_scenario", "test_report",
 })
 
 def _apply_profile() -> None:
@@ -663,10 +678,10 @@ def update_finding_status(session_id: str, finding_id: str, status: str) -> dict
     """Record fix-loop progress on a finding: open | fixed | verified | dismissed.
 
     Mark a finding `fixed` after editing the code, then `verified` once a re-run no
-    longer reproduces it — closing the find → fix → re-verify loop. (Re-verify by
-    re-running the app and checking the signature is gone — e.g. a fresh `test_app`
-    run or `inspector.eval`.) Works on any session on disk, live or long-finished —
-    so the dashboard fix loop can sign off past runs too.
+    longer reproduces it — closing the find → fix → re-verify loop. Re-verify with
+    `verify_fix(session_id, finding_id)` (replays that one finding's repro and re-checks
+    its oracle) or with a fresh `test_app` run. Works on any session on disk, live or
+    long-finished — so the dashboard fix loop can sign off past runs too.
     """
     from .dashboard.aggregate import update_finding_status as _update
     return _update(CONFIG.trace_root, session_id, finding_id, status)

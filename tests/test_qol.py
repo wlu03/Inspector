@@ -28,7 +28,7 @@ def test_safe_tools_are_read_only(name):
     assert _tool(name).annotations.readOnlyHint is True
 
 
-@pytest.mark.parametrize("name", ["test_app", "launch_app", "stop"])
+@pytest.mark.parametrize("name", ["test_app", "launch_app", "stop", "verify_fix"])
 def test_billed_tools_are_destructive(name):
     ann = _tool(name).annotations
     assert ann.destructiveHint is True and ann.readOnlyHint is False
@@ -36,7 +36,8 @@ def test_billed_tools_are_destructive(name):
 
 @pytest.mark.parametrize("name", ["act", "report_issue", "set_plan", "update_scenario",
                                   "check", "audit_dom", "open_dashboard",
-                                  "build_dashboard", "test_report", "devin_status"])
+                                  "build_dashboard", "test_report", "devin_status",
+                                  "update_finding_status"])
 def test_mutating_tools_are_write_not_destructive(name):
     ann = _tool(name).annotations
     assert ann.readOnlyHint is False and ann.destructiveHint is False
@@ -52,10 +53,23 @@ def test_server_exposes_usage_instructions():
     assert "launch_app" in text and "observe" in text and "act" in text and "stop" in text
 
 
+def test_instructions_document_the_fix_loop_that_core_actually_exposes():
+    text = server.mcp.instructions or ""
+    # the loop the README headlines has to be reachable under the default profile
+    for name in ("update_finding_status", "verify_fix", "report_issue", "check_assertions"):
+        assert name in text and name in server.CORE_TOOLS
+    # and anything it points at as full-profile-only really is
+    for name in ("fix_finding", "bug_ledger", "open_dashboard", "list_runs"):
+        assert name in text and name in server.ADVANCED_TOOLS
+    # the quoted counts must not drift from the registry
+    assert f"exposes {len(server.CORE_TOOLS)} tools" in text
+    assert f"adds the other {len(server.ADVANCED_TOOLS)}:" in text
+
+
 def test_profiles_partition_the_tool_registry():
     both = server.CORE_TOOLS | server.ADVANCED_TOOLS
     assert not (server.CORE_TOOLS & server.ADVANCED_TOOLS)
-    assert len(server.CORE_TOOLS) == 11 and len(both) == 26
+    assert len(server.CORE_TOOLS) == 13 and len(both) == 26
     for name in both:  # every classified tool is actually registered
         assert asyncio.run(server.mcp.get_tool(name)) is not None
 
@@ -65,9 +79,7 @@ def test_default_profile_is_core(monkeypatch):
     assert Config.from_env().profile == "core"
 
 
-@pytest.mark.parametrize("name", ["launch_app", "launch_status", "observe", "act", "check",
-                                  "report_issue", "audit_dom", "get_findings", "stop", "test_app",
-                                  "check_assertions"])
+@pytest.mark.parametrize("name", sorted(server.CORE_TOOLS))
 def test_core_tools_expose_output_schema(name):
     assert _tool(name).output_schema
 

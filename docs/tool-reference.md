@@ -3,7 +3,7 @@
 _Generated from the server by `scripts/gen_docs.py`. Do not edit by hand;
 run `python scripts/gen_docs.py` to regenerate._
 
-The default `core` profile exposes 11 tools; `INSPECTOR_PROFILE=full` exposes all 26.
+The default `core` profile exposes 13 tools; `INSPECTOR_PROFILE=full` exposes all 26.
 
 ## Core tools (default profile)
 
@@ -20,6 +20,8 @@ The default `core` profile exposes 11 tools; `INSPECTOR_PROFILE=full` exposes al
 | `report_issue` | write | File a finding the HOST agent judged from the screenshot (host-as-brain). |
 | `stop` | destructive | Tear down the sandbox (released first), then write the replay (html + video). |
 | `test_app` | destructive | ONE CALL: launch the app in a VM, autonomously explore it, and return the bugs found. |
+| `update_finding_status` | write | Record fix-loop progress on a finding: open | fixed | verified | dismissed. |
+| `verify_fix` | destructive | Re-verify ONE finding is fixed by replaying its exact repro on the current build. |
 
 ## Advanced tools (`INSPECTOR_PROFILE=full`)
 
@@ -37,6 +39,4 @@ The default `core` profile exposes 11 tools; `INSPECTOR_PROFILE=full` exposes al
 | `test_app_parallel` | destructive | PLAN → DISPATCH → MERGE: a planner maps the app into parts, then a headless agent |
 | `test_feature` | destructive | Cartographer — region-decomposed DETERMINISTIC bug sweep: "I built X, hand me fixes". |
 | `test_report` | write | Return the full test run: per-scenario status + notes + findings, plus totals. |
-| `update_finding_status` | write | Record fix-loop progress on a finding: open | fixed | verified | dismissed. |
 | `update_scenario` | write | Record a scenario's outcome once you've tested it. |
-| `verify_fix` | destructive | Re-verify ONE finding is fixed by replaying its exact repro on the current build. |
