@@ -3,7 +3,7 @@
 _Generated from the server by `scripts/gen_docs.py`. Do not edit by hand;
 run `python scripts/gen_docs.py` to regenerate._
 
-The default `core` profile exposes 16 tools; `INSPECTOR_PROFILE=full` exposes all 29.
+The default `core` profile exposes 16 tools; `INSPECTOR_PROFILE=full` exposes all 32.
 
 ## Core tools (default profile)
 
@@ -35,10 +35,13 @@ The default `core` profile exposes 16 tools; `INSPECTOR_PROFILE=full` exposes al
 | `devin_status` | external | Poll a Devin fix session; if it opened a PR, record `pr_url` on the issue. |
 | `fix_finding` | read-only | Get the actionable fix context for one finding — the live agent fix loop. |
 | `fix_with_devin` | destructive | Hand any surfaced issue to Devin AI — it opens a PR with the fix. |
+| `get_plan` | read-only | One saved plan in full: every scenario, its current status, and its run history. |
 | `get_run` | read-only | Full detail for one past session: meta, plan, findings (with fix prompts), counts. |
+| `list_plans` | read-only | The saved test plans for one app — the suites you can re-run against a new build. |
 | `list_runs` | read-only | List past Inspector sessions (newest first) with verdict + findings + replay path. |
 | `open_dashboard` | write | Build + serve the dashboard on localhost and return a clickable link. |
-| `set_plan` | write | Record the overall test plan: the scenarios (app parts/flows/edge cases) to cover. |
+| `run_plan` | destructive | RE-RUN a saved plan against the current build — "re-run my checkout suite" in one call. |
+| `set_plan` | write | Record the test plan — the scenarios to cover — and SAVE it as a re-runnable suite. |
 | `test_app_parallel` | destructive | PLAN → DISPATCH → MERGE: a planner maps the app into parts, then a headless agent |
 | `test_feature` | destructive | Cartographer — region-decomposed DETERMINISTIC bug sweep: "I built X, hand me fixes". |
 | `test_report` | write | Return the full test run: per-scenario status + notes + findings, plus totals. |

@@ -20,7 +20,7 @@ from .config import Config
 from .findings import build_finding, build_repro_spec
 from .models import ActionType, SessionState, Severity, Surface
 from .paths import valid_id
-from .plan import ScenarioStatus, build_plan
+from .plan import ScenarioStatus, build_plan, load_plan, save_plan
 from .session import (
     SessionManager,
     observation_channels,
@@ -59,11 +59,16 @@ INSTRUCTIONS = (
     "a later run, so an app behind auth is tested instead of its login form; "
     "set_viewport(session_id, 375, 812, mobile=true) is how the narrow-viewport checks "
     "actually run.\n\n"
+    "Repeatable suites: set_plan(session_id, goal, scenarios) SAVES the scenarios under "
+    "the app's repo, so run_plan(repo_path, plan_id) re-walks that exact suite on a later "
+    "build (list_plans / get_plan to find it) and every scenario keeps its per-run "
+    "history — which is what makes a regression visible instead of just a fresh opinion.\n\n"
     "The default `core` profile exposes 16 tools; INSPECTOR_PROFILE=full adds the other "
-    "13: fix_finding / bug_ledger, the dashboard (open_dashboard / build_dashboard), "
+    "16: fix_finding / bug_ledger, the dashboard (open_dashboard / build_dashboard), "
     "cross-run history (list_runs / get_run), test plans (set_plan / update_scenario / "
-    "test_report), test_app_parallel / test_feature, and Devin auto-fix (fix_with_devin / "
-    "devin_status). The inspector://sessions resources are always available.\n\n"
+    "test_report / list_plans / get_plan / run_plan), test_app_parallel / test_feature, "
+    "and Devin auto-fix (fix_with_devin / devin_status). The inspector://sessions "
+    "resources are always available.\n\n"
     "Setup: only REPLICATE_API_TOKEN (the detector) is required; E2B is optional. Host "
     "execution is refused over the HTTP transport without INSPECTOR_ALLOW_UNSAFE_LOCAL."
 )
@@ -98,6 +103,7 @@ ADVANCED_TOOLS = frozenset({
     "open_dashboard", "build_dashboard", "list_runs", "get_run", "fix_finding",
     "bug_ledger", "fix_with_devin", "devin_status", "test_app_parallel",
     "test_feature", "set_plan", "update_scenario", "test_report",
+    "list_plans", "get_plan", "run_plan",
 })
 
 def _apply_profile() -> None:
@@ -1346,27 +1352,87 @@ async def test_feature(
 
 # --- agentic test-plan orchestration ---
 
+def _persist_plan(plan) -> str:
+    """Save a plan to the durable per-repo store; '' (logged) when the write fails.
+
+    A failed write must not fail the tool call: the plan is live on the session either
+    way and the run can go on. What it costs is re-runnability, so the caller is told.
+    """
+    try:
+        return save_plan(CONFIG.trace_root, plan, CONFIG.workspace_roots)
+    except (OSError, ValueError, PermissionError):
+        log.warning("could not save plan %s under %s", plan.id, CONFIG.trace_root,
+                    exc_info=True)
+        return ""
+
+
+def _plan_summary(plan) -> dict:
+    """One saved plan as a listing row: what it covers and how it has been doing."""
+    return {
+        "plan_id": plan.id,
+        "goal": plan.goal,
+        "scenario_count": len(plan.scenarios),
+        "runs": len(plan.runs),
+        "totals": plan.totals(),
+        "regressions": [s.title for s in plan.regressions()],
+        "updated_at": plan.updated_at,
+    }
+
+
 @mcp.tool(annotations=WRITE)
 @_friendly
-def set_plan(session_id: str, goal: str, scenarios: list[dict]) -> dict:
-    """Record the overall test plan: the scenarios (app parts/flows/edge cases) to cover.
+def set_plan(session_id: str, goal: str, scenarios: list[dict], plan_id: str = "") -> dict:
+    """Record the test plan — the scenarios to cover — and SAVE it as a re-runnable suite.
 
     Call this after `launch_app` + an initial `observe`, once you've decided what to
     test. Then work the plan scenario-by-scenario. Each scenario is a dict:
-    {title, rationale, steps (list), expected}. You can call `set_plan` again to
-    adapt the plan as you discover features.
+    {title, rationale, steps (list), expected, assertions (optional)}. `assertions` is
+    the scenario's ORACLE, same shape as `check_assertions` — the condition that must
+    hold once its steps have run. Without one, a re-run of the scenario can only report
+    that nothing crashed.
+
+    WRITE THE STEPS SO A MACHINE CAN REPLAY THEM: `click "Save"`, `type "admin@x.com"`,
+    `press "Enter"`, `navigate to "/cart"`. `run_plan` drives exactly these lines against
+    a later build, matching each locator against the live element labels; a step that
+    names no action ("the total should update") is reported as un-walkable rather than
+    guessed at, so put the checks in `assertions` and keep `steps` to actions.
+
+    The plan is written to `<trace_root>/plans/<repo>/` as well as into this run's trace,
+    so `list_plans(repo_path)` and `run_plan(repo_path, plan_id)` can re-run this exact
+    suite after a change instead of re-inventing one. Call `set_plan` again to ADAPT the
+    plan mid-run: it updates the same saved plan, matching scenarios by title so their
+    per-run history survives the rewrite. Pass `plan_id` to update a specific saved plan.
     """
     session = MANAGER.get(session_id)
-    session.plan = build_plan(session.record.id, goal, scenarios)
-    session.trace.save_plan(session.plan)
-    return {
-        "plan_id": session.plan.id,
+    repo = session.record.repo_path
+    first_call = session.plan is None
+    target = plan_id or ("" if first_call else session.plan.id)
+    prior = load_plan(CONFIG.trace_root, repo, target, CONFIG.workspace_roots) if target else None
+    plan = build_plan(session.record.id, goal, scenarios, repo_path=repo, plan_id=target)
+    if prior is not None:
+        plan.adopt_history(prior)
+    if first_call:
+        # A new run of this suite: carry the history forward, but nothing is done yet.
+        plan.begin_run(session.record.id)
+    elif session.record.id not in plan.runs:
+        plan.runs.append(session.record.id)
+    session.plan = plan
+    session.trace.save_plan(plan)
+    saved = _persist_plan(plan)
+    out = {
+        "plan_id": plan.id,
+        "saved": bool(saved),
+        "runs": len(plan.runs),
         "scenarios": [
             {"id": s.id, "title": s.title, "status": s.status.value}
-            for s in session.plan.scenarios
+            for s in plan.scenarios
         ],
         "next": "Work each scenario: observe → act → verify → update_scenario.",
     }
+    if not saved:
+        out["save_error"] = ("the plan is live on this session but could not be written to "
+                             f"{CONFIG.trace_root} — it will not be re-runnable later")
+    return out
 
 
 @mcp.tool(annotations=WRITE)
@@ -1382,6 +1448,10 @@ def update_scenario(
 
     status ∈ passed | failed | skipped | blocked. Attach any finding ids
     (from `get_findings`) that this scenario surfaced.
+
+    The outcome is appended to the scenario's history in the saved plan, so a later
+    `get_plan` / `run_plan` can show that this scenario used to pass — a regression is
+    only visible if the previous verdicts were kept.
     """
     session = MANAGER.get(session_id)
     if session.plan is None:
@@ -1389,15 +1459,15 @@ def update_scenario(
     scenario = session.plan.get(scenario_id)
     if scenario is None:
         return {"error": f"unknown scenario {scenario_id!r}"}
-    scenario.status = ScenarioStatus(status)
-    scenario.notes = notes
-    if finding_ids:
-        scenario.finding_ids = finding_ids
+    scenario.record_run(ScenarioStatus(status), session_id=session.record.id, notes=notes,
+                        finding_ids=finding_ids)
     session.trace.save_plan(session.plan)
+    _persist_plan(session.plan)
     pending = session.plan.pending()
     return {
         "ok": True,
         "remaining": len(pending),
+        "regressed": scenario.regressed(),
         "next_pending": [{"id": s.id, "title": s.title} for s in pending[:5]],
     }
 
@@ -1415,10 +1485,94 @@ def test_report(session_id: str) -> dict:
     return {
         "goal": session.plan.goal,
         "totals": totals,
+        "plan_id": session.plan.id,
         "scenarios": [s.model_dump() for s in session.plan.scenarios],
+        "regressions": [s.title for s in session.plan.regressions()],
         "total_findings": len(session.record.findings),
         **_dashboard_links(session_id),  # clickable localhost link to this run's replay
     }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_plans(repo_path: str) -> dict:
+    """The saved test plans for one app — the suites you can re-run against a new build.
+
+    Most recently updated first, each with its scenario count, how many runs it has, the
+    current verdict per status, and any scenario that used to pass and no longer does.
+    Take a `plan_id` from here to `run_plan(repo_path, plan_id)` to walk it again, or to
+    `get_plan(plan_id)` for the scenarios and their full per-run history.
+    """
+    from .plan import list_plans as _list_saved_plans
+
+    try:
+        plans = _list_saved_plans(CONFIG.trace_root, repo_path, CONFIG.workspace_roots)
+    except PermissionError as exc:
+        return {"error": str(exc)}
+    return {
+        "repo_path": repo_path,
+        "total": len(plans),
+        "plans": [_plan_summary(p) for p in plans],
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_plan(plan_id: str) -> dict:
+    """One saved plan in full: every scenario, its current status, and its run history.
+
+    `history` on a scenario is one row per run of the plan (session, verdict, notes,
+    findings), oldest first — read it to see whether a failing scenario is newly broken
+    or has never worked, which is the difference between a regression and a known gap.
+    """
+    from .plan import find_plan
+
+    plan = find_plan(CONFIG.trace_root, plan_id)
+    if plan is None:
+        return {"error": f"no saved plan {plan_id!r} — call list_plans(repo_path) to see "
+                         "what is saved for an app"}
+    return {
+        **_plan_summary(plan),
+        "repo_path": plan.repo_path,
+        "created_at": plan.created_at,
+        "scenarios": [s.model_dump() for s in plan.scenarios],
+    }
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def run_plan(
+    repo_path: str,
+    plan_id: str,
+    surface: str | None = None,
+    dev_command: str | None = None,
+    ctx: Context = None,
+) -> dict:
+    """RE-RUN a saved plan against the current build — "re-run my checkout suite" in one call.
+
+    Launches the app and walks every scenario of the saved plan: it replays the scenario's
+    written steps by element label, evaluates its `assertions` oracle, and records the
+    verdict onto that scenario's history, then tears the app down and returns the replay
+    link. Because the scenarios are the SAME ones as last time, the result is comparable:
+    `regressions` lists every scenario that used to pass and just failed.
+
+    A scenario whose steps no longer replay comes back `blocked` with the step it stopped
+    at — its own steps have gone from the UI — never as a pass. Use `list_plans(repo_path)`
+    to find the plan_id, and `set_plan` on a live session to author or adapt one.
+    """
+    from .plan import run_plan as _run_saved_plan
+
+    surf = Surface(surface) if surface else None
+    await _say(ctx, f"Re-running plan {plan_id} against {repo_path}…", 5)
+    try:
+        result = await _run_with_heartbeat(
+            ctx, "Re-running the plan",
+            lambda: _run_saved_plan(CONFIG, repo_path, plan_id, surf, dev_command),
+        )
+    except PermissionError as exc:
+        return {"status": "not_run", "plan_id": plan_id, "error": str(exc)}
+    if result.get("session_id"):
+        result.update(_dashboard_links(result["session_id"]))
+    totals = result.get("totals") or {}
+    await _say(ctx, f"plan {result.get('status', 'not_run')}: {totals}", 100)
+    return result
 
 
 @mcp.prompt
@@ -1436,14 +1590,15 @@ Target: `{repo_path}`  ·  Goal: {goal}
    • **Round 1 — Functional:** the core user flows (action → expected result).
    • **Round 2 — Adversarial:** re-examine Round 1 for what could BREAK it — error paths, empty states, race conditions (rapid double-submit), edge inputs (empty, invalid, 500+ chars, special/unicode, `<script>`/SQL injection), and different roles.
    • **Round 3 — Coverage:** accessibility (`audit_dom`), keyboard-only nav, a bogus route (404), narrow/mobile viewport, console errors, visual consistency.
-   Dedupe across the three rounds into 4–8 scenarios. Each: {{title, rationale, steps, expected}}.
+   Dedupe across the three rounds into 4–8 scenarios. Each: {{title, rationale, steps, expected, assertions}}.
+   The plan is SAVED under the repo and can be re-run later, so write `steps` as replayable actions (`click "Save"`, `type "admin@x.com"`, `press "Enter"`, `navigate to "/cart"`) and put the check itself in `assertions` (same shape as `check_assertions`) — that is what makes the suite comparable across runs instead of re-invented each time.
 4. For each PENDING scenario, run the inner loop:
    a. `observe()` to see the current state.
    b. Decide the next action from the numbered image + element list, **preferring the adversarial move over the happy path**, then `act(...)`. Re-observe after each action (verify-after-act).
    c. After the key action, `check(expectation=...)` and `get_findings(...)`. For web/Electron, call `audit_dom()` to collect deterministic a11y / broken-image / unlabeled-input findings the screenshot can't show.
    d. `update_scenario(scenario_id, status=passed|failed|..., notes=..., finding_ids=[...])`.
    e. If you discover new features mid-run, call `set_plan` again to ADAPT the plan.
-5. When no PENDING scenarios remain, `report_issue(...)` anything you SAW that the log tap missed, then `test_report()` and summarize: what passed/failed, the findings (with file:line where available), and recommended fixes. **Finish by giving the user the `dashboard_url` from the result as a clickable link** so they can replay the run and inspect every bug the agent surfaced.
+5. When no PENDING scenarios remain, `report_issue(...)` anything you SAW that the log tap missed, then `test_report()` and summarize (tell the user the `plan_id`: `run_plan(repo_path, plan_id)` re-walks this exact suite after their next change): what passed/failed, the findings (with file:line where available), and recommended fixes. **Finish by giving the user the `dashboard_url` from the result as a clickable link** so they can replay the run and inspect every bug the agent surfaced.
 
 ADVERSARIAL MOVES TO TRY (consult per element type):
 {catalog_text()}

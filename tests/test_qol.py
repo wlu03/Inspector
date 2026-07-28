@@ -76,7 +76,7 @@ def test_instructions_document_the_fix_loop_that_core_actually_exposes():
 def test_profiles_partition_the_tool_registry():
     both = server.CORE_TOOLS | server.ADVANCED_TOOLS
     assert not (server.CORE_TOOLS & server.ADVANCED_TOOLS)
-    assert len(server.CORE_TOOLS) == 16 and len(both) == 29
+    assert len(server.CORE_TOOLS) == 16 and len(both) == 32
     for name in both:  # every classified tool is actually registered
         assert asyncio.run(server.mcp.get_tool(name)) is not None
 
