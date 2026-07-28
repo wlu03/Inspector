@@ -22,6 +22,13 @@ class Detector(Protocol):
     def detect(self, image_bytes: bytes) -> list[Element]: ...
 
 
+# The only values INSPECTOR_DETECTOR can take. Kept beside the dispatch so the guard
+# and the error message can never drift apart — a misconfigured backend should tell
+# the user what IS on offer rather than leaving them to guess from a bare
+# "not implemented". Anything added here needs a matching `_detect_*` branch below.
+SUPPORTED_BACKENDS = ("replicate", "http")
+
+
 class OmniParserDetector:
     """Element detector backed by OmniParser V2.
 
@@ -47,9 +54,11 @@ class OmniParserDetector:
 
     def detect(self, image_bytes: bytes) -> list[Element]:
         backend = self.config.detector_backend
-        if backend not in ("replicate", "http"):
+        if backend not in SUPPORTED_BACKENDS:
             raise NotImplementedError(
-                f"detector backend {backend!r} not implemented (see docs/11 Part D)"
+                f"detector backend {backend!r} not implemented; "
+                f"set INSPECTOR_DETECTOR to one of "
+                f"{', '.join(SUPPORTED_BACKENDS)} (see docs/11 Part D)"
             )
         # An empty/invalid screenshot (CDP/adb dropped, renderer mid-reload) means no
         # elements — never ship it to the backend (OmniParser errors on a non-image and
