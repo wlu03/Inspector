@@ -38,6 +38,11 @@ CDP_PORT = 9223
 # that — a same-document '#' route, or a shell served over http(s), where re-loading the
 # origin simply boots the app again. Set this to 1 to waive the guard deliberately.
 NAV_OPT_IN_ENV = "INSPECTOR_ALLOW_ELECTRON_NAVIGATE"
+# One `InputAction.amount` unit is one wheel notch, and a notch is a ninth of the
+# viewport — so the default amount of 3 still scrolls the third of a screen this adapter
+# has always scrolled, while `amount` now actually changes the distance instead of being
+# discarded (which made "scroll to the bottom of a long page" impossible in one call).
+SCROLL_NOTCHES_PER_VIEWPORT = 9
 # Per-instance CDP ports so multiple Electron sessions can run in PARALLEL (the
 # fan-out verifier) without colliding on a single debugging port.
 _port_seq = itertools.count(CDP_PORT)
@@ -172,7 +177,8 @@ class LocalElectronAdapter(SurfaceAdapter):
             self.cdp.key(action.key or "")
         elif t == ActionType.SCROLL:
             w, h = self._viewport
-            dy = h // 3 if action.direction == "down" else -h // 3
+            notch = max(1, h // SCROLL_NOTCHES_PER_VIEWPORT) * max(1, action.amount)
+            dy = notch if action.direction != "up" else -notch
             self.cdp.scroll(w // 2, h // 2, dy)
         elif t == ActionType.DRAG:
             self.cdp.drag(action.x, action.y, action.to_x, action.to_y)

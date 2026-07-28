@@ -90,6 +90,12 @@ class Action(BaseModel):
     type: ActionType
     target_id: int | None = None
     coords: list[int] | None = None
+    # Where a DRAG ended, and how a SCROLL was aimed. Without them the record of a drag
+    # is indistinguishable from a click at its start point, and every scroll reads as the
+    # default downward one — a re-run script that quietly does something else.
+    to_coords: list[int] | None = None
+    direction: str | None = None
+    amount: int | None = None
     text: str | None = None
     key: str | None = None
     ts: str = Field(default_factory=_now)
@@ -103,6 +109,8 @@ class Action(BaseModel):
 class ReproStep(BaseModel):
     action: str            # click | type | key | scroll | ...
     locator: str = ""      # semantic: the element's label/role, not raw coordinates
+    to_locator: str = ""   # where a drag ENDED, again semantic — a drag with only a
+                           # start point is just a click, and replays as one
     text: str | None = None
     key: str | None = None
 

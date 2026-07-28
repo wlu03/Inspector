@@ -18,6 +18,32 @@ from .perception.som import render_set_of_mark
 from .trace import TraceRecorder
 
 
+SCROLL_DIRECTIONS = ("up", "down")
+
+
+def _scroll_direction(direction: str | None) -> str:
+    """Normalize a scroll direction, refusing anything no surface can actually do.
+
+    Every adapter reads this field as "down unless it says up", so an unrecognized
+    value (a typo, "downward", a left/right the surfaces don't implement) would scroll
+    DOWN and report success — the agent then concludes the content it asked to scroll
+    to isn't there. Better to fail the call with the valid set in the message.
+    """
+    d = (direction or "down").strip().lower()
+    if d not in SCROLL_DIRECTIONS:
+        raise ValueError(f"unknown scroll direction {direction!r}; use one of "
+                         f"{', '.join(SCROLL_DIRECTIONS)}")
+    return d
+
+
+def _scroll_amount(amount: int | None) -> int:
+    """Clamp the scroll distance to at least one notch — a 0 would be a silent no-op."""
+    try:
+        return max(1, int(amount))
+    except (TypeError, ValueError):
+        return 1
+
+
 class Session:
     """A live verification session against one running app on one surface."""
 
@@ -157,11 +183,25 @@ class Session:
         text: str | None = None,
         key: str | None = None,
         coords: list[int] | None = None,
+        *,
+        to_id: int | None = None,
+        to_coords: list[int] | None = None,
+        direction: str = "down",
+        amount: int = 3,
     ) -> tuple[bytes, bool, list[str]]:
+        """Perform one action and return (post-action SoM png, changed, new logs).
+
+        `to_id` / `to_coords` are the DESTINATION of a drag (an element id from the last
+        observation, or raw screen px) — a drag without one is a click. `direction` and
+        `amount` aim a scroll; they are ignored by the other action types.
+        """
         self.touch()
         self.guard.tick()
         self._keepalive()
-        self.action_log.append(self._describe_action(action_type, target_id, text, key))
+        self.action_log.append(self._describe_action(
+            action_type, target_id, text, key, coords=coords, to_id=to_id,
+            to_coords=to_coords, direction=direction,
+        ))
         # Hold the capture lock across the whole adapter sequence so a heartbeat
         # snapshot can't interleave on the (non-reentrant) transport mid-action.
         with self._capture_lock:
@@ -171,10 +211,16 @@ class Session:
             # Resolve the concrete click point now so the trace (and the replay cursor)
             # records WHERE we acted — even for target_id clicks that carry no raw coords.
             click_xy = coords
+            drop_xy = to_coords
             try:
-                input_action = self._resolve(action_type, target_id, text, key, coords)
+                input_action = self._resolve(
+                    action_type, target_id, text, key, coords,
+                    to_id=to_id, to_coords=to_coords, direction=direction, amount=amount,
+                )
                 if input_action.x is not None and input_action.y is not None:
                     click_xy = [input_action.x, input_action.y]
+                if input_action.to_x is not None and input_action.to_y is not None:
+                    drop_xy = [input_action.to_x, input_action.to_y]
                 self.adapter.input(input_action)
                 time.sleep(0.4)  # settle
                 after = self.adapter.screenshot()
@@ -182,7 +228,8 @@ class Session:
                 # record the failed step so the trace/re-run script stays complete
                 action = Action(
                     seq=self.action_seq, type=action_type, target_id=target_id,
-                    coords=click_xy, text=text, key=key, result="error", changed=False,
+                    coords=click_xy, to_coords=drop_xy, direction=direction, amount=amount,
+                    text=text, key=key, result="error", changed=False,
                     screenshot_before=frame_before, logs=[f"[inspector] action error: {exc}"],
                 )
                 self.trace.record_action(action)
@@ -200,6 +247,7 @@ class Session:
 
             action = Action(
                 seq=self.action_seq, type=action_type, target_id=target_id, coords=click_xy,
+                to_coords=drop_xy, direction=direction, amount=amount,
                 text=text, key=key, result="ok" if changed else "no_change", changed=changed,
                 screenshot_before=frame_before, screenshot_after=frame_after, logs=logs,
             )
@@ -278,22 +326,38 @@ class Session:
     def _resolve(
         self, action_type: ActionType, target_id: int | None,
         text: str | None, key: str | None, coords: list[int] | None,
+        *, to_id: int | None = None, to_coords: list[int] | None = None,
+        direction: str = "down", amount: int = 3,
     ) -> InputAction:
-        if action_type == ActionType.DRAG:
-            # DRAG needs a destination, which the act tool can't yet express.
-            raise NotImplementedError(
-                "DRAG is not supported yet (no destination parameter) — see review follow-ups"
-            )
+        """Turn the tool-level arguments into the one normalized event adapters consume.
+
+        Both endpoints go through the same resolution — an element id from the last
+        observation, or raw screen px — because a drag is just a click with a second
+        point, and the destination has to be grounded in the SAME coordinate space as
+        the origin or the gesture ends somewhere nobody asked for.
+        """
+        x, y = self._point(target_id, coords)
+        to_x, to_y = self._point(to_id, to_coords)
+        if action_type == ActionType.DRAG and (to_x is None or to_y is None):
+            raise ValueError("drag needs a destination: pass to_id or to_coords")
+        return InputAction(
+            action_type, x=x, y=y, to_x=to_x, to_y=to_y, text=text, key=key,
+            direction=_scroll_direction(direction), amount=_scroll_amount(amount),
+        )
+
+    def _point(
+        self, target_id: int | None, coords: list[int] | None
+    ) -> tuple[int | None, int | None]:
+        """One endpoint in screen px: explicit coords win, else the element's center."""
         if coords:
-            return InputAction(action_type, x=coords[0], y=coords[1], text=text, key=key)
-        if target_id is not None:
-            el = next((e for e in self.last_elements if e.id == target_id), None)
-            if el is None:
-                raise ValueError(f"unknown target_id {target_id}; call observe first")
-            w, h = self.adapter.screen_size()
-            cx, cy = el.center_px(w, h)
-            return InputAction(action_type, x=cx, y=cy, text=text, key=key)
-        return InputAction(action_type, text=text, key=key)
+            return int(coords[0]), int(coords[1])
+        if target_id is None:
+            return None, None
+        el = next((e for e in self.last_elements if e.id == target_id), None)
+        if el is None:
+            raise ValueError(f"unknown target_id {target_id}; call observe first")
+        w, h = self.adapter.screen_size()
+        return el.center_px(w, h)
 
     @staticmethod
     def _label_of(elements: list[Element], target_id: int | None) -> str:
@@ -302,17 +366,39 @@ class Session:
 
     def _describe_action(
         self, action_type: ActionType, target_id: int | None,
-        text: str | None, key: str | None,
+        text: str | None, key: str | None, *, coords: list[int] | None = None,
+        to_id: int | None = None, to_coords: list[int] | None = None,
+        direction: str = "down",
     ) -> str:
+        """One human-readable line for the action log — which is also the repro script.
+
+        `build_repro_spec` parses these lines straight back into ReproSteps, so the
+        rendering is a wire format, not decoration: anything this line drops (a drag's
+        destination, a scroll's direction) is gone from every finding's repro spec.
+        """
         if action_type == ActionType.TYPE:
             return f"type {text!r}"
         if action_type == ActionType.KEY:
             return f"press {key!r}"
+        if action_type == ActionType.SCROLL:
+            return f"scroll {_scroll_direction(direction)}"
         verb = action_type.value.replace("_", " ")
+        if action_type == ActionType.DRAG:
+            return (f"{verb} {self._describe_target(target_id, coords)} "
+                    f"to {self._describe_target(to_id, to_coords)}")
         if target_id is not None:
             label = self._label_of(self.last_elements, target_id)
             return f"{verb} element #{target_id}" + (f" ({label})" if label else "")
         return verb
+
+    def _describe_target(self, target_id: int | None, coords: list[int] | None) -> str:
+        """An endpoint as the log renders it: `element #3 (Save)`, or a raw point."""
+        if target_id is not None:
+            label = self._label_of(self.last_elements, target_id)
+            return f"element #{target_id}" + (f" ({label})" if label else "")
+        if coords:
+            return f"({coords[0]}, {coords[1]})"
+        return "(unknown)"
 
     def _ingest_findings(self, logs: list[str]) -> int:
         """Save new deterministic findings; return how many were new (for the guard)."""

@@ -6,7 +6,16 @@ from types import SimpleNamespace
 import inspector.server as server
 from inspector.assertions import Assertion, AssertionKind, AssertionOp
 from inspector.findings import build_repro_spec
-from inspector.models import Finding, ReproSpec, ReproStep, SessionRecord, Surface
+from inspector.models import (
+    ActionType,
+    Element,
+    Finding,
+    ReproSpec,
+    ReproStep,
+    SessionRecord,
+    Surface,
+)
+from inspector.session import Session
 from inspector.trace import TraceRecorder
 
 
@@ -31,6 +40,42 @@ def test_build_repro_spec_parses_semantic_steps():
     assert any(s.action == "key" and s.key == "Enter" for s in spec.steps)
     assert spec.surface == "web"
     assert "surface=web" in spec.preconditions
+
+
+def _round_trip(*steps) -> list[ReproStep]:
+    """Render actions the way `Session.act` logs them, then parse that log back.
+
+    The action log is the only carrier between an action and the repro spec attached to
+    every finding, so anything that does not survive this pair is silently unreplayable.
+    """
+    session = Session.__new__(Session)
+    session.record = _FakeRecord()
+    session.adapter = _FakeAdapter()
+    session.last_elements = [
+        Element(id=0, label="Card", bbox=[0.1, 0.1, 0.2, 0.2]),
+        Element(id=1, label="Done column", bbox=[0.8, 0.8, 0.9, 0.9]),
+    ]
+    session.action_log = [session._describe_action(*args, **kwargs) for args, kwargs in steps]
+    return build_repro_spec(session).steps
+
+
+def test_a_drag_round_trips_through_the_action_log():
+    [step] = _round_trip(((ActionType.DRAG, 0, None, None), {"to_id": 1}))
+    assert step.action == "drag"
+    assert step.locator == "Card" and step.to_locator == "Done column"
+
+
+def test_a_drag_to_raw_coordinates_still_records_where_it_went():
+    [step] = _round_trip(((ActionType.DRAG, 0, None, None), {"to_coords": [640, 480]}))
+    assert step.action == "drag" and step.to_locator == "(640, 480)"
+
+
+def test_a_scroll_records_the_direction_it_was_aimed():
+    [up, down] = _round_trip(
+        ((ActionType.SCROLL, None, None, None), {"direction": "up"}),
+        ((ActionType.SCROLL, None, None, None), {}),
+    )
+    assert up.action == "scroll up" and down.action == "scroll down"
 
 
 def test_build_repro_spec_accepts_oracle():

@@ -492,6 +492,22 @@ def observe(session_id: str, include_image: bool = True) -> ObserveResult:
     return data
 
 
+def _action_type(name: str) -> ActionType:
+    """Parse the `act` tool's `type` argument, naming the alternatives when it's wrong.
+
+    The bare enum error ("'clic' is not a valid ActionType") tells the calling agent
+    nothing about what IS valid, so it guesses again; listing the set turns a wasted
+    turn into a corrected one.
+    """
+    try:
+        return ActionType(name)
+    except ValueError:
+        raise ValueError(
+            f"unknown action type {name!r}; valid types are: "
+            f"{', '.join(t.value for t in ActionType)}"
+        ) from None
+
+
 @mcp.tool(annotations=WRITE)
 @_friendly
 def act(
@@ -501,17 +517,28 @@ def act(
     text: str | None = None,
     key: str | None = None,
     coords: list[int] | None = None,
+    to_id: int | None = None,
+    to_coords: list[int] | None = None,
+    direction: str = "down",
+    amount: int = 3,
     include_image: bool = True,
 ) -> ActResult:
     """Perform one action and return the post-action Set-of-Mark image + `changed` + logs.
 
-    `type` is one of: click, double_click, type, scroll, key, wait.
-    Prefer `target_id` (from `observe`) over raw `coords`. The returned image is
-    the screen *after* the action — this is verify-after-act. Set `include_image=false`
-    (or hit the per-session image cap) to get `changed`+logs only and save host tokens.
+    `type` is one of: click, double_click, type, scroll, drag, key, wait.
+    Prefer `target_id` (from `observe`) over raw `coords`. Extra arguments per type:
+    `text` for type, `key` for key, `direction` ("up"/"down") + `amount` (wheel notches)
+    for scroll, and `to_id` OR `to_coords` for the destination of a drag.
+
+    The returned image is the screen *after* the action — this is verify-after-act. Set
+    `include_image=false` (or hit the per-session image cap) to get `changed`+logs only
+    and save host tokens.
     """
     session = MANAGER.get(session_id)
-    som, changed, logs = session.act(ActionType(type), target_id, text, key, coords)
+    som, changed, logs = session.act(
+        _action_type(type), target_id, text, key, coords,
+        to_id=to_id, to_coords=to_coords, direction=direction, amount=amount,
+    )
     data = {"changed": changed, "logs": logs}
     if include_image and session.image_allowed():
         return _result(Image(data=som, format="png"), data)

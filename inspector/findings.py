@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .models import Confidence, Finding, Severity
 
 
@@ -35,6 +37,17 @@ def build_finding(
     )
 
 
+def _endpoint_locator(rendered: str) -> str:
+    """The semantic half of one endpoint as `Session._describe_action` rendered it.
+
+    `element #3 (Save)` -> `Save`. An endpoint that was given as raw coordinates has no
+    label to recover, so the point itself comes back — it is the only record of where
+    the gesture went, and a replayer can decide whether it trusts a coordinate.
+    """
+    m = re.match(r"element #\d+(?: \((.*)\))?$", rendered.strip())
+    return (m.group(1) or "") if m else rendered.strip()
+
+
 def build_repro_spec(session, oracle=None):
     """A durable, replayable spec for a finding: surface, route, preconditions, semantic
     steps (by element label, not raw coordinates), and an explicit oracle. Lets
@@ -48,8 +61,6 @@ def build_repro_spec(session, oracle=None):
     about that same expectation, so it should re-verify against that real check instead
     of falling back to digit-normalized summary matching.
     """
-    import re
-
     from .models import ReproSpec, ReproStep
 
     steps: list[ReproStep] = []
@@ -61,6 +72,11 @@ def build_repro_spec(session, oracle=None):
         m = re.match(r"press '(.*)'$", entry)
         if m:
             steps.append(ReproStep(action="key", key=m.group(1)))
+            continue
+        m = re.match(r"drag (.+?) to (.+)$", entry)
+        if m:
+            steps.append(ReproStep(action="drag", locator=_endpoint_locator(m.group(1)),
+                                   to_locator=_endpoint_locator(m.group(2))))
             continue
         m = re.match(r"([\w ]+?) element #\d+(?: \((.*)\))?$", entry)
         if m:

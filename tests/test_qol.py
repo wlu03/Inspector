@@ -10,10 +10,13 @@ import pytest
 
 import inspector.server as server
 from inspector import notify
+from inspector.adapters.base import InputAction
+from inspector.adapters.local_electron import LocalElectronAdapter
 from inspector.config import Config
 from inspector.dashboard.aggregate import scan_sessions
 from inspector.dashboard.render import render_index
-from inspector.session import SessionManager
+from inspector.models import ActionType, Element
+from inspector.session import Session, SessionManager
 
 
 # --- 1. tool annotations (auto-approve safe, prompt on billed) ---------------
@@ -208,6 +211,112 @@ def test_dashboard_has_live_feed_and_ticking_times():
     assert "id='live'" in html and "Running now" in html             # live panel
     assert "pollLive" in html and "live.json" in html and "RUNNING" in html
     assert "function ago(" in html and "tickTimes" in html           # ticking relative time
+
+
+# --- 13. the action schema: every parameter really reaches the adapter -------
+
+class _StubAdapter:
+    """Only the two methods `Session._resolve` touches, so no app has to be running."""
+
+    def __init__(self):
+        self.actions = []
+
+    def screen_size(self):
+        return (1000, 1000)
+
+    def input(self, action):
+        self.actions.append(action)
+
+
+def _bare_session(*elements) -> Session:
+    """A Session with nothing but the state the action resolver reads — building a real
+    one would boot a sandbox, a detector and a trace recorder."""
+    s = Session.__new__(Session)
+    s.adapter = _StubAdapter()
+    s.last_elements = list(elements)
+    s.action_log = []
+    return s
+
+
+def _el(el_id: int, x: float, y: float, label: str = "") -> Element:
+    return Element(id=el_id, label=label, bbox=[x, y, x, y], interactivity=True)
+
+
+def test_drag_resolves_a_destination_instead_of_refusing():
+    s = _bare_session(_el(0, 0.1, 0.1, "Card"), _el(1, 0.8, 0.8, "Done"))
+    action = s._resolve(ActionType.DRAG, 0, None, None, None, to_id=1)
+    assert (action.x, action.y) == (100, 100)
+    assert (action.to_x, action.to_y) == (800, 800)
+
+
+def test_drag_destination_can_be_raw_coordinates():
+    s = _bare_session(_el(0, 0.1, 0.1, "Card"))
+    action = s._resolve(ActionType.DRAG, 0, None, None, None, to_coords=[640, 480])
+    assert (action.to_x, action.to_y) == (640, 480)
+
+
+def test_drag_without_a_destination_is_refused_not_silently_a_click():
+    s = _bare_session(_el(0, 0.1, 0.1, "Card"))
+    with pytest.raises(ValueError, match="to_id or to_coords"):
+        s._resolve(ActionType.DRAG, 0, None, None, None)
+
+
+def test_scroll_direction_and_amount_reach_the_input_action():
+    s = _bare_session()
+    action = s._resolve(ActionType.SCROLL, None, None, None, None, direction="up", amount=9)
+    assert action.direction == "up" and action.amount == 9
+    # the default is the historical one, so existing callers scroll exactly as before
+    default = s._resolve(ActionType.SCROLL, None, None, None, None)
+    assert default.direction == "down" and default.amount == 3
+
+
+def test_unknown_scroll_direction_is_refused_rather_than_scrolling_down():
+    s = _bare_session()
+    with pytest.raises(ValueError, match="scroll direction"):
+        s._resolve(ActionType.SCROLL, None, None, None, None, direction="downward")
+
+
+def test_scroll_amount_never_collapses_to_a_no_op():
+    s = _bare_session()
+    assert s._resolve(ActionType.SCROLL, None, None, None, None, amount=0).amount == 1
+
+
+class _ScrollCDP:
+    def __init__(self):
+        self.calls = []
+
+    def scroll(self, x, y, dy):
+        self.calls.append((x, y, dy))
+
+
+def _scroll_adapter():
+    a = LocalElectronAdapter(Config())
+    a.cdp = _ScrollCDP()
+    a._viewport = (1200, 900)
+    return a
+
+
+def test_cdp_scroll_honours_direction_and_amount():
+    a = _scroll_adapter()
+    a.input(InputAction(ActionType.SCROLL, direction="up", amount=3))
+    a.input(InputAction(ActionType.SCROLL, direction="down", amount=9))
+    (_x, _y, up), (_x2, _y2, down) = a.cdp.calls
+    assert up < 0 < down and abs(down) == 3 * abs(up)
+    # amount=3 (the default) is still a third of the viewport, as it always was
+    assert abs(up) == 300
+
+
+def test_act_tool_advertises_the_drag_and_scroll_parameters():
+    params = asyncio.run(server.mcp.get_tool("act")).parameters["properties"]
+    for name in ("to_id", "to_coords", "direction", "amount"):
+        assert name in params
+    text = asyncio.run(server.mcp.get_tool("act")).description
+    assert "drag" in text and "to_id" in text and "direction" in text
+
+
+def test_act_tool_rejects_an_unknown_type_by_naming_the_valid_ones():
+    with pytest.raises(ValueError, match="click"):
+        server._action_type("clic")
 
 
 def test_live_sessions_provider_reads_the_manager():
