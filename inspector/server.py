@@ -406,6 +406,8 @@ class AuditResult(TypedDict, total=False):
     axe_violations: list
     broken_images: list
     unlabeled_inputs: list
+    axe_ran: bool
+    axe_error: str
     new_findings: list[str]
     total_findings: int
 
@@ -777,16 +779,26 @@ def audit_dom(session_id: str) -> AuditResult:
     (shows up in get_findings / test_report / the replay). Returns the raw counts.
     No-ops (empty) on surfaces without a DOM. Use this in your accessibility/coverage
     scenarios — it catches what the screenshot can't.
+
+    Check `axe_ran` before reading `axe_violations` as a pass: an empty list means the
+    accessibility pass found nothing ONLY when `axe_ran` is true. If it is false, axe
+    never executed (the app's CSP blocked it, the page navigated mid-audit) and
+    `axe_error` says why — the broken-image and unlabeled-input results are pure DOM
+    and stay trustworthy either way.
     """
     session = MANAGER.get(session_id)
     audit, new_ids = session.audit()
-    return {
+    out: AuditResult = {
         "axe_violations": audit.get("axe_violations", []),
         "broken_images": audit.get("broken_images", []),
         "unlabeled_inputs": audit.get("unlabeled_inputs", []),
+        "axe_ran": bool(audit.get("axe_ran")),
         "new_findings": new_ids,
         "total_findings": len(session.record.findings),
     }
+    if audit.get("axe_error"):
+        out["axe_error"] = str(audit["axe_error"])[:300]
+    return out
 
 
 @mcp.tool(annotations=WRITE)

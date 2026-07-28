@@ -751,3 +751,42 @@ def test_live_sessions_provider_reads_the_manager():
         assert row["state"] == "interacting"
     finally:
         server.MANAGER.sessions.pop("ses_1", None)
+
+
+class _AuditSession:
+    """Minimal session whose audit() returns a canned raw audit dict."""
+
+    def __init__(self, audit: dict):
+        self._audit = audit
+        self.record = SessionRecord(repo_path="/repo", surface=Surface.WEB)
+
+    def audit(self):
+        return self._audit, []
+
+    def touch(self):
+        pass
+
+
+def _audit_dom_with(audit: dict) -> dict:
+    server.MANAGER.sessions["ses_audit"] = _AuditSession(audit)
+    try:
+        return server.audit_dom("ses_audit")
+    finally:
+        server.MANAGER.sessions.pop("ses_audit", None)
+
+
+def test_audit_dom_forwards_the_axe_failure_reason():
+    # an empty violations list must never reach the agent looking like a clean pass
+    out = _audit_dom_with({"axe_violations": [], "broken_images": ["/a.png"],
+                           "unlabeled_inputs": [], "axe_error": "CSP blocked the injection"})
+    assert out["axe_ran"] is False
+    assert "CSP" in out["axe_error"]
+    # the pure-DOM checks are unaffected by axe failing, so they stay trustworthy
+    assert out["broken_images"] == ["/a.png"]
+
+
+def test_audit_dom_reports_a_real_pass_as_a_real_pass():
+    out = _audit_dom_with({"axe_violations": [], "broken_images": [],
+                           "unlabeled_inputs": [], "axe_ran": True})
+    assert out["axe_ran"] is True
+    assert "axe_error" not in out
