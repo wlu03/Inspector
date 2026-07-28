@@ -589,10 +589,15 @@ def check_assertions(session_id: str, assertions: list[Assertion]) -> Assertions
     gte | lte. A channel that isn't available (network/screenshot, a missing element, no
     URL on this surface) returns `inconclusive` with a reason, never a false pass.
     Returns per-assertion results with evidence plus an `overall` verdict.
+
+    The set is remembered on the session: any finding filed afterwards inherits it as
+    its re-verification oracle, so a bug caught here is later re-checked by this exact
+    condition rather than by "a similar summary did not reappear".
     """
     session = MANAGER.get(session_id)
     ctx = _assertion_context(session, assertions)
     results = evaluate_assertions(assertions, **ctx)
+    session.last_assertions = list(assertions)
     return {"results": [r.model_dump() for r in results], **summarize(results)}
 
 
@@ -607,6 +612,7 @@ def report_issue(
     suspected_area: str = "",
     repro: list[str] | None = None,
     screenshot_ref: str | None = None,
+    assertions: list[Assertion] = [],
 ) -> ReportIssueResult:
     """File a finding the HOST agent judged from the screenshot (host-as-brain).
 
@@ -614,6 +620,19 @@ def report_issue(
     element, bad copy, an action that silently did nothing. This records a structured
     Finding into the session trace so it shows up in get_findings / test_report /
     the replay alongside the auto-detected ones. severity ∈ low|medium|high|critical.
+
+    `assertions` is this finding's ORACLE, and its direction is the opposite of the one
+    you will reach for first. WRITE THE CORRECT BEHAVIOR — the condition that will PASS
+    once the bug is fixed. Do NOT write the bug, and do NOT write an assertion that
+    passes right now. If the page should show "Saved" but shows nothing, the oracle is
+    [{"kind": "text", "target": "Saved", "op": "present"}] — it FAILS today and PASSES
+    after the fix. Same shape as `check_assertions` (kind / target / op / expected / on).
+
+    It is stored on the finding's ReproSpec, and `verify_fix` replays the repro on the
+    new build and re-evaluates it: oracle passes -> fixed, fails -> still_present,
+    inconclusive -> not_run. Omit it and the finding inherits the last `check_assertions`
+    set from this session; with neither, re-verification degrades to weak summary
+    matching — so pass an oracle whenever you can state one.
     """
     session = MANAGER.get(session_id)
     sev = {s.value: s for s in Severity}.get(severity.lower(), Severity.MEDIUM)
@@ -628,7 +647,7 @@ def report_issue(
         repro=repro or session.action_log[-4:],
         screenshot_refs=[screenshot_ref] if screenshot_ref else [],
     )
-    finding.repro_spec = build_repro_spec(session)
+    finding.repro_spec = build_repro_spec(session, oracle=assertions)
     session.trace.save_finding(finding)
     session.record.findings.append(finding.id)
     return {

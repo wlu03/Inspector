@@ -6,6 +6,7 @@ import time
 from . import detection
 from .adapters import get_adapter
 from .adapters.base import InputAction, SurfaceAdapter
+from .assertions import Assertion
 from .config import Config
 from .findings import build_repro_spec
 from .launch.detect import detect_project
@@ -31,6 +32,11 @@ class Session:
         self.action_seq = 0
         self.plan = None  # TestPlan, set via the set_plan tool
         self.action_log: list[str] = []  # human-readable steps, used for repro
+        # The assertion set `check_assertions` last evaluated here — the CORRECT behavior
+        # the agent was checking for. Findings filed afterwards (log tap, DOM audit, an
+        # oracle-less report_issue) inherit it as their ReproSpec oracle via
+        # build_repro_spec, so re-verification has a real check instead of nothing.
+        self.last_assertions: list[Assertion] = []
         self._seen_findings: set[str] = set()  # de-dup signatures
         self.created_at = time.monotonic()
         self.touched_at = self.created_at  # last activity, for the reaper

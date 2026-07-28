@@ -38,7 +38,16 @@ def build_finding(
 def build_repro_spec(session, oracle=None):
     """A durable, replayable spec for a finding: surface, route, preconditions, semantic
     steps (by element label, not raw coordinates), and an explicit oracle. Lets
-    re-verification replay the exact scenario and check a real condition."""
+    re-verification replay the exact scenario and check a real condition.
+
+    `oracle` is a list of Assertions describing the CORRECT behavior — what PASSES once
+    the bug is fixed, never a description of the bug itself. When the caller has none,
+    the spec inherits the last assertion set evaluated on this session
+    (`session.last_assertions`, recorded by the `check_assertions` tool): a log-tap or
+    DOM-audit finding filed right after a failing `check_assertions` is almost always
+    about that same expectation, so it should re-verify against that real check instead
+    of falling back to digit-normalized summary matching.
+    """
     import re
 
     from .models import ReproSpec, ReproStep
@@ -71,5 +80,6 @@ def build_repro_spec(session, oracle=None):
         except Exception:
             route = ""
     pre = [f"surface={surface}"] + ([f"route={route}"] if route else [])
+    oracle = oracle or getattr(session, "last_assertions", None) or []
     return ReproSpec(surface=surface, route=route, preconditions=pre,
-                     steps=steps, oracle=oracle or [])
+                     steps=steps, oracle=list(oracle))
