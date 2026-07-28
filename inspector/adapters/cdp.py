@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from .cdp_client import DOM_AUDIT_EXPR
+
 # Fallback Node path (the web adapter installs Node here; Electron may have system node).
 _NODE_FALLBACK = "/home/user/node/bin/node"
 
@@ -71,52 +73,18 @@ def dom_labels(sandbox, port: int) -> list[str]:
     return [str(x).strip() for x in data if str(x).strip()]
 
 
-# One-shot DETERMINISTIC audit over CDP: inject axe-core (from CDN), then read three
-# structured signals straight off the live DOM — WCAG violations, images that failed
-# to load (naturalWidth=0), and form inputs with no accessible label. These are facts,
-# not vision judgments — the strongest evidence tier (parity with ui-test `browse eval`).
+# One-shot DETERMINISTIC audit over CDP: run the SHARED in-page audit expression (the
+# one local Electron/web evaluate directly — see cdp_client.DOM_AUDIT_EXPR) and read
+# three structured signals straight off the live DOM — WCAG violations, images that
+# failed to load (naturalWidth=0), and form inputs with no accessible label. These are
+# facts, not vision judgments — the strongest evidence tier (parity with ui-test
+# `browse eval`). The expression is interpolated, never re-written here: two copies of
+# the audit would drift and the two execution planes would then report different facts.
 # `awaitPromise` lets the in-page async IIFE finish (axe loads + runs) before we read.
-DOM_AUDIT_JS = r"""
+DOM_AUDIT_JS = (
+    r"""
 const PORT = process.argv[2] || '9222';
-const EXPR = `(async () => {
-  const out = { axe_violations: [], broken_images: [], unlabeled_inputs: [] };
-  try {
-    out.broken_images = [...document.images]
-      .filter(i => i.complete && i.naturalWidth === 0)
-      .map(i => i.currentSrc || i.src || '(no src)').slice(0, 50);
-  } catch (e) {}
-  try {
-    const forId = new Set();
-    document.querySelectorAll('label[for]').forEach(l => forId.add(l.getAttribute('for')));
-    out.unlabeled_inputs = [...document.querySelectorAll('input,select,textarea')]
-      .filter(el => {
-        if (el.type === 'hidden') return false;
-        const aria = el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.getAttribute('title');
-        const ph = el.getAttribute('placeholder');
-        const wrapped = el.closest('label');
-        const labelled = el.id && forId.has(el.id);
-        return !(aria || ph || wrapped || labelled);
-      })
-      .map(el => el.name || el.id || el.type || 'input').slice(0, 50);
-  } catch (e) {}
-  try {
-    if (!window.axe) {
-      await new Promise((res, rej) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js';
-        s.onload = res; s.onerror = rej;
-        document.head.appendChild(s);
-        setTimeout(rej, 6000);
-      });
-    }
-    if (window.axe) {
-      const r = await window.axe.run(document, { resultTypes: ['violations'] });
-      out.axe_violations = r.violations.map(v => ({
-        id: v.id, impact: v.impact, help: v.help, nodes: (v.nodes || []).length }));
-    }
-  } catch (e) { out.axe_error = String(e); }
-  return JSON.stringify(out);
-})()`;
+const EXPR = `""" + DOM_AUDIT_EXPR + r"""`;
 async function main() {
   let page = null;
   for (let i = 0; i < 20 && !page; i++) {
@@ -142,6 +110,7 @@ async function main() {
 }
 main();
 """
+)
 
 
 def audit_dom(sandbox, port: int) -> dict:

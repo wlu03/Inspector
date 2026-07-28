@@ -193,6 +193,16 @@ class LocalElectronAdapter(SurfaceAdapter):
         raw = self.cdp.evaluate(DOM_TEXT_JS)
         return parse_text_elements(raw, vw, vh) if raw else []
 
+    def audit_dom(self) -> dict:
+        """Deterministic DOM audit straight over the live CDP session.
+
+        The local counterpart of the sandboxed `cdp.audit_dom` — same in-page
+        expression, no Node runner in between. Inherited by LocalWebAdapter, so the
+        default no-API-key configuration gets the hard-evidence tier too; without this
+        override the base class's empty `{}` made every local audit read as a pass.
+        """
+        return self.cdp.audit_dom() if self.cdp else {}
+
     def rendered_elements(self) -> list[str]:
         if not self.cdp:
             return []

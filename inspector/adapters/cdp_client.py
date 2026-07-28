@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 
 from ..models import Element
 
@@ -48,6 +49,89 @@ DOM_TEXT_JS = r"""JSON.stringify(
                x:r.x, y:r.y, w:r.width, h:r.height }; })
     .filter(e => e.w>1 && e.h>1)
 )"""
+
+
+# The DETERMINISTIC audit, as ONE in-page async IIFE returning a JSON string. This is
+# the single definition of the audit: the sandboxed path (adapters/cdp.py) embeds it in
+# the Node runner it writes into the VM, the local path evaluates it straight over the
+# CDP socket. Keeping one copy is the point — two copies drift, and a drifted audit
+# reports different facts on the two execution planes.
+#
+# It reads three structured signals off the live DOM: WCAG violations (axe-core),
+# images that failed to load (naturalWidth=0), and inputs with no accessible label.
+# Only the first needs axe; the other two are pure DOM and MUST keep working when axe
+# is unavailable, so each check sits in its own try/catch. `axe_ran` is the honest
+# receipt that the a11y pass actually happened — without it an empty `axe_violations`
+# is indistinguishable from a pass, which is exactly the failure this audit exists to
+# prevent. Callers evaluate it with awaitPromise so axe finishes before the read.
+DOM_AUDIT_EXPR = r"""(async () => {
+  const out = { axe_violations: [], broken_images: [], unlabeled_inputs: [] };
+  try {
+    out.broken_images = [...document.images]
+      .filter(i => i.complete && i.naturalWidth === 0)
+      .map(i => i.currentSrc || i.src || '(no src)').slice(0, 50);
+  } catch (e) {}
+  try {
+    const forId = new Set();
+    document.querySelectorAll('label[for]').forEach(l => forId.add(l.getAttribute('for')));
+    out.unlabeled_inputs = [...document.querySelectorAll('input,select,textarea')]
+      .filter(el => {
+        if (el.type === 'hidden') return false;
+        const aria = el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.getAttribute('title');
+        const ph = el.getAttribute('placeholder');
+        const wrapped = el.closest('label');
+        const labelled = el.id && forId.has(el.id);
+        return !(aria || ph || wrapped || labelled);
+      })
+      .map(el => el.name || el.id || el.type || 'input').slice(0, 50);
+  } catch (e) {}
+  try {
+    if (!window.axe) {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js';
+        s.onload = res;
+        s.onerror = () => rej(new Error('axe-core CDN blocked (script-src CSP or no network)'));
+        document.head.appendChild(s);
+        setTimeout(() => rej(new Error('axe-core CDN load timed out')), 6000);
+      });
+    }
+    if (window.axe) {
+      const r = await window.axe.run(document, { resultTypes: ['violations'] });
+      out.axe_violations = r.violations.map(v => ({
+        id: v.id, impact: v.impact, help: v.help, nodes: (v.nodes || []).length }));
+      out.axe_ran = true;
+    } else {
+      out.axe_error = 'axe-core loaded but never defined window.axe';
+    }
+  } catch (e) { out.axe_error = String((e && e.message) || e); }
+  return JSON.stringify(out);
+})()"""
+
+# axe-core 4.10.2, vendored (see vendor/axe.min.js). Injecting the SOURCE TEXT over CDP
+# is immune to the app's Content-Security-Policy, whereas appending a <script src> to a
+# CDN is silently killed by any strict script-src — and a silently missing axe returns
+# zero violations, which reads as a clean pass. The CDN stays as the fallback for when
+# the vendored copy isn't on disk (e.g. a trimmed install).
+_AXE_PATH = os.path.join(os.path.dirname(__file__), "vendor", "axe.min.js")
+_axe_source_cache: str | None = None
+
+
+def axe_source() -> str:
+    """Return the vendored axe-core source text, or '' if it isn't bundled.
+
+    Read once and cached — the file is ~550 KB and the audit may run many times per
+    session. Never raises: a missing/unreadable vendor file just means the in-page CDN
+    fallback (and the explicit `axe_error` it reports) takes over.
+    """
+    global _axe_source_cache
+    if _axe_source_cache is None:
+        try:
+            with open(_AXE_PATH, encoding="utf-8") as fh:
+                _axe_source_cache = fh.read()
+        except Exception:
+            _axe_source_cache = ""
+    return _axe_source_cache
 
 
 def parse_text_elements(raw, vw: int, vh: int, id_offset: int = 0) -> list[Element]:
@@ -229,6 +313,53 @@ class CDPClient:
         r = self._cmd("Runtime.evaluate",
                       {"expression": expr, "returnByValue": True, "awaitPromise": await_promise})
         return (r.get("result") or {}).get("value")
+
+    def inject_axe(self) -> str:
+        """Define `window.axe` from the vendored source; return '' on success, else why.
+
+        Evaluating the library's own text is the CSP-proof path — Runtime.evaluate is
+        not subject to the page's script-src, so this works on apps where the CDN
+        <script> tag the in-page fallback appends would be blocked. The return value is
+        a REASON string rather than a bool because the caller has to be able to tell the
+        agent why the a11y pass is missing instead of implying there was nothing to find.
+        """
+        src = axe_source()
+        if not src:
+            return "vendored axe-core is missing; falling back to the CDN"
+        try:
+            if self.evaluate("typeof window.axe") == "object":
+                return ""  # already injected (a repeat audit on the same page)
+            kind = self.evaluate(src + "\n;typeof window.axe")
+        except Exception as exc:
+            return f"axe-core injection failed: {exc}"
+        if kind != "object":
+            return f"axe-core injection did not define window.axe (typeof {kind!r})"
+        return ""
+
+    def audit_dom(self) -> dict:
+        """Run the deterministic DOM audit in the live page and return its signals.
+
+        Returns {axe_violations, broken_images, unlabeled_inputs} plus, whenever the
+        a11y pass did NOT run, an `axe_error` explaining why. That key is the whole
+        point: an empty `axe_violations` from a blocked axe-core is otherwise
+        indistinguishable from a clean page, and the caller would report a pass it
+        never earned. The pure-DOM checks are unaffected by an axe failure.
+
+        Degrades to {} on a dead socket / unparseable payload, like every other
+        perception call here — one broken subsystem must not end the run.
+        """
+        inject_error = self.inject_axe()
+        try:
+            raw = self.evaluate(DOM_AUDIT_EXPR, await_promise=True)
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        if not data.get("axe_ran"):
+            reason = data.get("axe_error") or "axe-core did not run"
+            data["axe_error"] = f"{reason} [{inject_error}]" if inject_error else reason
+        return data
 
     def control_state(self, index: int) -> dict:
         try:
