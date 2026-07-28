@@ -86,6 +86,10 @@ def build_repro_spec(session, oracle=None):
         if m:
             steps.append(ReproStep(action=m.group(1)))
             continue
+        m = re.match(r"scroll (\w+)$", entry)
+        if m:
+            steps.append(ReproStep(action="scroll", direction=m.group(1)))
+            continue
         m = re.match(r"drag (.+?) to (.+)$", entry)
         if m:
             steps.append(ReproStep(action="drag", locator=_endpoint_locator(m.group(1)),

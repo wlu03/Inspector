@@ -327,6 +327,7 @@ def parse_step(step: str):
     something else in their place.
     """
     from .models import ReproStep
+    from .session import SCROLL_DIRECTIONS
 
     text = (step or "").strip()
     low = text.lower()
@@ -343,6 +344,12 @@ def parse_step(step: str):
             return ReproStep(action=action, text=value) if value else None
         if action == "key":
             return ReproStep(action=action, key=arg) if arg else None
+        if action == "scroll":
+            # "scroll up to the header" — only the direction is executable, and an
+            # unknown one is dropped rather than guessed, so the replay scrolls the
+            # way the author wrote or the default way, never the opposite way.
+            word = arg.split()[0].lower() if arg else ""
+            return ReproStep(action=action, direction=word if word in SCROLL_DIRECTIONS else "")
         if action in _BARE_ACTIONS:
             return ReproStep(action=action)
         return ReproStep(action=action, locator=arg) if arg else None

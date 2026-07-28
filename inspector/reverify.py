@@ -33,7 +33,13 @@ def load_actions(session_dir: str) -> list[dict]:
 
 def replay_actions(session, actions: list[dict]) -> int:
     """Re-drive recorded actions by coordinate against a fresh session. Returns the
-    number of actions replayed (skips ones with no usable coordinate)."""
+    number of actions replayed (skips ones with no usable coordinate).
+
+    Everything the recorder wrote about an action is handed back: a drag's destination,
+    a scroll's aim, a navigate's url. Replaying only the origin coordinate turned a drag
+    into a click and every scroll into a downward one, so the re-run script drifted from
+    the run it was supposed to be a copy of.
+    """
     from .models import ActionType
     n = 0
     for a in actions:
@@ -45,7 +51,11 @@ def replay_actions(session, actions: list[dict]) -> int:
         if t in (ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.DRAG) and not coords:
             continue  # can't replay a click with no recorded coordinate
         try:
-            session.act(t, coords=coords, text=a.get("text"), key=a.get("key"))
+            session.act(
+                t, coords=coords, text=a.get("text"), key=a.get("key"),
+                to_coords=a.get("to_coords"), direction=a.get("direction") or "down",
+                amount=a.get("amount") or 3, url=a.get("url") or "",
+            )
             n += 1
         except Exception:
             continue
@@ -110,6 +120,9 @@ def mark_fixed(session_dir: str, target_summary: str, fixed: bool) -> int:
     return n
 
 
+_POINT = re.compile(r"^\((\d+),\s*(\d+)\)$")
+
+
 def _find_by_label(elements, locator: str):
     """Re-find an element by its semantic label (exact, then contains). None if absent."""
     if not locator:
@@ -122,6 +135,22 @@ def _find_by_label(elements, locator: str):
         if t and t in (e.label or "").lower():
             return e
     return None
+
+
+def _endpoint(session, locator: str) -> tuple[int | None, list[int] | None]:
+    """One endpoint of a pointer step as `(element id, coordinates)`; both None if it is
+    gone from this build.
+
+    A locator the log could only record as a raw point (`(640, 480)` — a gesture that was
+    driven by coordinates, so there was never a label) replays as that point. Everything
+    else is re-found by label on the live screen, because the build under test has its own
+    layout and a remembered coordinate would land on whatever moved into that spot.
+    """
+    m = _POINT.match((locator or "").strip())
+    if m:
+        return None, [int(m.group(1)), int(m.group(2))]
+    el = _find_by_label(session.last_elements, locator)
+    return (el.id, None) if el is not None else (None, None)
 
 
 @dataclass(frozen=True)
@@ -268,6 +297,11 @@ def replay_spec(session, spec) -> ReplayOutcome:
 
     Stops early when a step's element can't be found — the scenario diverged, and the
     outcome says how far it got so the caller can report that instead of a verdict.
+
+    Every action type the recorder can write has a branch here. One that fell off the end
+    of the chain would be counted as replayed without being performed, and the oracle
+    would then be judged on a screen the scenario never reached — the exact shape of a
+    bug being closed while it is still there.
     """
     from .models import ActionType
 
@@ -275,17 +309,28 @@ def replay_spec(session, spec) -> ReplayOutcome:
     unreachable = reach_route(session, spec)
     if unreachable:
         return ReplayOutcome(0, len(steps), unreachable)
+    pointer = (ActionType.CLICK, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK,
+               ActionType.HOVER)
     valid = {t.value for t in ActionType}
     done = 0
     for step in steps:
         at = ActionType(step.action) if step.action in valid else ActionType.WAIT
         try:
-            if at in (ActionType.CLICK, ActionType.DOUBLE_CLICK):
+            if at in pointer:
                 session.observe()
-                el = _find_by_label(session.last_elements, step.locator)
-                if el is None:
+                tid, pt = _endpoint(session, step.locator)
+                if tid is None and pt is None:
                     break  # scenario diverged -> not fully reached
-                session.act(at, target_id=el.id)
+                session.act(at, target_id=tid, coords=pt)
+            elif at == ActionType.DRAG:
+                session.observe()
+                tid, pt = _endpoint(session, step.locator)
+                to_id, to_pt = _endpoint(session, step.to_locator)
+                if (tid is None and pt is None) or (to_id is None and to_pt is None):
+                    break  # either end of the gesture is gone -> the drag is not this drag
+                session.act(at, target_id=tid, coords=pt, to_id=to_id, to_coords=to_pt)
+            elif at == ActionType.SCROLL:
+                session.act(at, direction=step.direction or "down")
             elif at == ActionType.TYPE:
                 session.act(at, text=step.text)
             elif at == ActionType.KEY:

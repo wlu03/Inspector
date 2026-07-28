@@ -22,8 +22,8 @@ def test_replay_skips_clickless_and_invalid():
         def __init__(self):
             self.calls = []
 
-        def act(self, t, coords=None, text=None, key=None):
-            self.calls.append((t, coords, text))
+        def act(self, t, coords=None, text=None, key=None, **kw):
+            self.calls.append((t, coords, text, kw))
 
     s = _S()
     n = replay_actions(s, [
@@ -33,8 +33,31 @@ def test_replay_skips_clickless_and_invalid():
         {"type": "bogus"},               # invalid type → skipped
     ])
     assert n == 2
-    assert s.calls[0] == (ActionType.CLICK, [10, 20], None)
+    assert s.calls[0][:3] == (ActionType.CLICK, [10, 20], None)
     assert s.calls[1][0] == ActionType.TYPE
+
+
+def test_replay_carries_the_whole_recorded_action():
+    """A drag replayed without its destination is a click, and a scroll replayed without
+    its direction goes the other way — either one silently re-runs a different session."""
+
+    class _S:
+        def __init__(self):
+            self.calls = []
+
+        def act(self, t, coords=None, text=None, key=None, **kw):
+            self.calls.append((t, kw))
+
+    s = _S()
+    n = replay_actions(s, [
+        {"type": "drag", "coords": [1, 2], "to_coords": [30, 40]},
+        {"type": "scroll", "direction": "up", "amount": 5},
+        {"type": "navigate", "url": "/cart"},
+    ])
+    assert n == 3
+    assert s.calls[0][1]["to_coords"] == [30, 40]
+    assert (s.calls[1][1]["direction"], s.calls[1][1]["amount"]) == ("up", 5)
+    assert s.calls[2][1]["url"] == "/cart"
 
 
 def test_load_actions(tmp_path):
@@ -60,12 +83,17 @@ class _Sess:
         self.last_elements = [Element(id=i, label=lbl, bbox=[0, 0, 1, 1])
                               for i, lbl in enumerate(labels)]
         self.acts = []
+        self.calls = []
 
     def observe(self):
         return b"", self.last_elements, []
 
-    def act(self, at, target_id=None, text=None, key=None, coords=None, url=""):
+    def act(self, at, target_id=None, text=None, key=None, coords=None, *,
+            to_id=None, to_coords=None, direction="down", amount=3, url=""):
         self.acts.append((at.value, target_id, text, key, url))
+        self.calls.append({"action": at.value, "target_id": target_id, "coords": coords,
+                           "to_id": to_id, "to_coords": to_coords, "direction": direction,
+                           "text": text, "key": key, "url": url})
 
 
 def test_replay_spec_semantic_and_not_run():
@@ -85,6 +113,51 @@ def test_replay_spec_semantic_and_not_run():
     diverged = replay_spec(_Sess(["Save"]), spec2)
     assert (diverged.completed, diverged.total) == (0, 2)
     assert diverged.reached and not diverged.complete   # we got there; the app changed
+
+
+def test_every_recorded_action_type_is_actually_performed_on_replay():
+    """A step with no branch in the replay used to be counted as done without running,
+    so the oracle was judged on a screen the scenario never produced — a bug closed
+    while it is still there. Every action the recorder can write must reach `act`."""
+    from inspector.models import ReproSpec, ReproStep
+    from inspector.reverify import replay_spec
+
+    s = _Sess(["Card", "Done column"])
+    spec = ReproSpec(steps=[
+        ReproStep(action="hover", locator="Card"),
+        ReproStep(action="right_click", locator="Card"),
+        ReproStep(action="drag", locator="Card", to_locator="Done column"),
+        ReproStep(action="scroll", direction="up"),
+    ])
+    outcome = replay_spec(s, spec)
+    assert (outcome.completed, outcome.total) == (4, 4) and outcome.complete
+    assert [c["action"] for c in s.calls] == ["hover", "right_click", "drag", "scroll"]
+    assert (s.calls[2]["target_id"], s.calls[2]["to_id"]) == (0, 1)
+    assert s.calls[3]["direction"] == "up"
+
+
+def test_a_drag_whose_destination_is_gone_diverges_instead_of_replaying_as_a_click():
+    from inspector.models import ReproSpec, ReproStep
+    from inspector.reverify import replay_spec
+
+    s = _Sess(["Card"])
+    spec = ReproSpec(steps=[ReproStep(action="drag", locator="Card",
+                                      to_locator="Done column")])
+    outcome = replay_spec(s, spec)
+    assert (outcome.completed, outcome.total) == (0, 1) and not outcome.complete
+    assert s.calls == []
+
+
+def test_a_gesture_recorded_as_raw_coordinates_replays_at_that_point():
+    # a drag driven by coordinates has no label to re-find, so the point is all there is
+    from inspector.models import ReproSpec, ReproStep
+    from inspector.reverify import replay_spec
+
+    s = _Sess(["Card"])
+    spec = ReproSpec(steps=[ReproStep(action="drag", locator="Card",
+                                      to_locator="(640, 480)")])
+    assert replay_spec(s, spec).complete
+    assert s.calls[0]["to_coords"] == [640, 480]
 
 
 def test_replay_spec_replays_a_navigate_step():

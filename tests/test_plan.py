@@ -191,6 +191,12 @@ def test_list_plans_on_an_unknown_repo_is_empty(tmp_path):
     ('press "Enter"', "key", "key", "Enter"),
     ('navigate to "/cart"', "navigate", "url", "/cart"),
     ("go to /settings", "navigate", "url", "/settings"),
+    ("hover over the avatar", "hover", "locator", "avatar"),
+    ('right-click "Card"', "right_click", "locator", "Card"),
+    # the direction has to reach the replay: a "scroll up" that replays as a scroll down
+    # walks away from the thing the scenario was written to look at
+    ("scroll up", "scroll", "direction", "up"),
+    ("scroll to the footer", "scroll", "direction", ""),
 ])
 def test_parse_step(text, action, field, value):
     step = parse_step(text)
@@ -223,8 +229,10 @@ class _FakeSession:
     def observe(self):
         return b"", self.last_elements, []
 
-    def act(self, at, target_id=None, text=None, key=None, coords=None, url=""):
+    def act(self, at, target_id=None, text=None, key=None, coords=None, *,
+            to_id=None, to_coords=None, direction="down", amount=3, url=""):
         self.acts.append((at.value, target_id, text, url))
+        self.direction = direction
 
     def observation_context(self, labels=frozenset()):
         return {"texts": self.texts, "elements": [], "url": None, "states": {}}

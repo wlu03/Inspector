@@ -123,6 +123,8 @@ class ReproStep(BaseModel):
                            # start point is just a click, and replays as one
     url: str = ""          # the route a navigate step went to; without it a replay
                            # starts on the home screen and never reaches the bug
+    direction: str = ""    # how a scroll was aimed; a step that keeps only "scroll"
+                           # replays downward and never reveals what was above the fold
     text: str | None = None
     key: str | None = None
 

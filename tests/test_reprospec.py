@@ -100,11 +100,15 @@ def test_a_targetless_pointer_action_is_still_a_real_action_type():
 
 
 def test_a_scroll_records_the_direction_it_was_aimed():
+    # the direction has to land in a FIELD, not in the verb: `replay_spec` dispatches on
+    # the action name, and "scroll up" is not an ActionType, so it would replay as a wait
     [up, down] = _round_trip(
         ((ActionType.SCROLL, None, None, None), {"direction": "up"}),
         ((ActionType.SCROLL, None, None, None), {}),
     )
-    assert up.action == "scroll up" and down.action == "scroll down"
+    assert (up.action, up.direction) == ("scroll", "up")
+    assert (down.action, down.direction) == ("scroll", "down")
+    assert ActionType(up.action) is ActionType.SCROLL
 
 
 def test_build_repro_spec_accepts_oracle():
