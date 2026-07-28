@@ -37,7 +37,7 @@ Inspector plugs into Claude Code, Cursor, or any MCP coding agent. It spins up a
 
 ## Status
 
-Web is live and proven end to end. Pure-Python core with 26 MCP tools — 11 exposed by default under the `core` profile, the remaining 15 advanced and admin tools unlocked with `INSPECTOR_PROFILE=full` — plus `audit_dom`, adversarial planning, and findings plus replay, all covered by the unit suite (`pytest -q`). Electron is one refactor out; Android and iOS adapters are in progress. All four surfaces are in scope as a personal dev tool (no hosting or payments yet).
+Web is live and proven end to end. Pure-Python core with 32 MCP tools — 16 exposed by default under the `core` profile, the remaining 16 advanced and admin tools unlocked with `INSPECTOR_PROFILE=full` — plus `audit_dom`, adversarial planning, and findings plus replay, all covered by the unit suite (`pytest -q`). Electron is one refactor out; Android and iOS adapters are in progress. All four surfaces are in scope as a personal dev tool (no hosting or payments yet).
 
 ## Quickstart
 
