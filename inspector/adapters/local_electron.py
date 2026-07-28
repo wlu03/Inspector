@@ -13,6 +13,7 @@ import shlex
 import signal
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 
 from ..config import Config
@@ -28,6 +29,14 @@ from .cdp_client import (
 )
 
 CDP_PORT = 9223
+# Page.navigate REPLACES the document, and on a packaged Electron app the document IS
+# the app shell: a file:// bundle whose renderer was handed its IPC bridge by a preload
+# script. Sending it to an in-app route string blanks the window instead of routing
+# ('/does-not-exist' resolves to file:///does-not-exist), and the router that could have
+# routed back died with the document. So navigation is allowed only where it cannot do
+# that — a same-document '#' route, or a shell served over http(s), where re-loading the
+# origin simply boots the app again. Set this to 1 to waive the guard deliberately.
+NAV_OPT_IN_ENV = "INSPECTOR_ALLOW_ELECTRON_NAVIGATE"
 # Per-instance CDP ports so multiple Electron sessions can run in PARALLEL (the
 # fan-out verifier) without colliding on a single debugging port.
 _port_seq = itertools.count(CDP_PORT)
@@ -168,6 +177,80 @@ class LocalElectronAdapter(SurfaceAdapter):
             self.cdp.drag(action.x, action.y, action.to_x, action.to_y)
         elif t == ActionType.WAIT:
             pass
+
+    def navigate(self, url: str) -> bool:
+        """Drive the renderer to `url` (absolute, or relative to the current document).
+
+        Refuses rather than no-ops when the target would replace a file:// app shell —
+        see NAV_OPT_IN_ENV. Inherited by LocalWebAdapter, where the app is always served
+        over http(s) and the guard therefore never fires.
+        """
+        if not self.cdp or not url:
+            return False
+        target = self._nav_target(url)
+        if target is None:
+            return False
+        return self.cdp.navigate(target)
+
+    def _nav_target(self, url: str) -> str | None:
+        """Resolve `url` against the document on screen; None if we must not go there."""
+        current = self.cdp.current_url()
+        if url.startswith("#"):
+            return (current.split("#", 1)[0] + url) if current else None
+        target = urllib.parse.urljoin(current, url) if current else url
+        log = logging.getLogger("inspector")
+        if not urllib.parse.urlsplit(target).scheme:
+            log.warning("navigate(%r): no current URL to resolve a relative path against", url)
+            return None
+        if os.environ.get(NAV_OPT_IN_ENV) == "1":
+            return target
+        if current.startswith("file:"):
+            log.warning(
+                "navigate(%r) refused: the app shell is a file:// document, so navigating "
+                "would replace the app itself rather than route inside it — use a '#' route, "
+                "or set %s=1 if that is really what you want", url, NAV_OPT_IN_ENV)
+            return None
+        return target
+
+    def go_back(self) -> bool:
+        return self.cdp.back() if self.cdp else False
+
+    def go_forward(self) -> bool:
+        return self.cdp.forward() if self.cdp else False
+
+    def reload(self) -> bool:
+        return self.cdp.reload() if self.cdp else False
+
+    def set_viewport(self, width: int, height: int, mobile: bool = False) -> bool:
+        """Resize the emulated viewport, and move the click coordinate space with it.
+
+        Updating `self._viewport` is not bookkeeping, it is the entire point: it is what
+        `screen_size()` reports, what `screenshot()` downscales the capture to, and what
+        the session multiplies element bbox ratios by to get a click. Emulating a 375px
+        phone while this still said 1280 would leave every subsequent click computed at
+        the old scale, i.e. off the right-hand edge of the screen the agent is looking
+        at — a silent mis-click, which is far worse than a refused resize. It is set only
+        after the browser confirms the override, so a failed resize leaves the old,
+        still-accurate value in place.
+        """
+        if not self.cdp:
+            return False
+        w, h = int(width or 0), int(height or 0)
+        if w <= 0 or h <= 0:
+            return False
+        if not self.cdp.set_viewport(w, h, mobile=mobile):
+            return False
+        self._viewport = (w, h)
+        return True
+
+    def clear_viewport(self) -> bool:
+        """Drop the emulation override and re-read the real size back into `_viewport`,
+        so the coordinate space follows the window back exactly as it followed it out."""
+        if not self.cdp:
+            return False
+        ok = self.cdp.clear_viewport_override()
+        self._refresh_viewport()
+        return ok
 
     def logs(self) -> list[str]:
         return self.cdp.drain_console() if self.cdp else []

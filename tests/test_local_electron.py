@@ -356,6 +356,290 @@ def test_adapter_network_delegates_to_cdp_and_noops_without_one():
     assert SurfaceAdapter.network(a) == []       # surfaces without traffic capture no-op
 
 
+# --- navigation + viewport (routes and responsive layouts are unreachable without them) ---
+
+class _DeadSocket:
+    """A socket nothing ever arrives on — `_wait_for_load` must give up, never hang."""
+
+    def settimeout(self, t): pass
+    def recv(self): raise OSError("no frames")
+
+
+class _NavCDP(CDPClient):
+    """CDPClient with the socket swapped for canned command replies, so the REAL
+    navigate/history/emulation logic (and its load-event wait) runs offline."""
+
+    def __init__(self, history=None, replies=None, fires_load=True):
+        self._ws = _DeadSocket()
+        self._console: list[str] = []
+        self._network: dict[str, dict] = {}
+        self._load_count = 0
+        self._timeout = 1
+        self.sent: list[tuple[str, dict]] = []
+        self.history = history
+        self.replies = replies or {}
+        self.fires_load = fires_load
+
+    def _cmd_raw(self, method, params=None):
+        self.sent.append((method, params or {}))
+        if self.fires_load and method in (
+                "Page.navigate", "Page.reload", "Page.navigateToHistoryEntry"):
+            self._load_count += 1          # the page finished loading while we waited
+        if method in self.replies:
+            return self.replies[method]
+        if method == "Page.getNavigationHistory" and self.history is not None:
+            return {"result": self.history}
+        return {"result": {}}
+
+    def methods(self):
+        return [m for m, _ in self.sent]
+
+
+def _hist(index, urls):
+    return {"currentIndex": index, "entries": [{"id": i + 1, "url": u}
+                                               for i, u in enumerate(urls)]}
+
+
+def test_navigate_sends_the_url_and_waits_for_the_load_event():
+    cdp = _NavCDP()
+    assert cdp.navigate("http://localhost:3000/does-not-exist") is True
+    assert ("Page.navigate", {"url": "http://localhost:3000/does-not-exist"}) in cdp.sent
+    assert cdp._load_count == 1        # waited on the event, not on a blind sleep
+
+
+def test_navigate_reports_a_navigation_the_browser_refused():
+    # errorText = the browser would not go there at all. A 404 from a server that DID
+    # answer is a successful navigation (its status shows up on the network channel).
+    cdp = _NavCDP(replies={"Page.navigate":
+                           {"result": {"frameId": "1", "errorText": "net::ERR_NAME_NOT_RESOLVED"}}})
+    assert cdp.navigate("http://nope.invalid/") is False
+
+
+def test_navigate_is_false_on_a_dead_socket_and_on_an_empty_url():
+    assert _NavCDP(replies={"Page.navigate": {}}).navigate("http://a/") is False
+    cdp = _NavCDP()
+    assert cdp.navigate("") is False
+    assert cdp.sent == []
+
+
+def test_navigate_still_reports_true_when_the_load_event_never_arrives():
+    # A slow page has still navigated; the caller should go look at it rather than be
+    # told the navigation failed. The wait must time out instead of blocking forever.
+    cdp = _NavCDP(fires_load=False)
+    assert cdp.navigate("http://localhost:3000/slow", timeout=0.05) is True
+
+
+def test_back_and_forward_re_enter_the_neighbouring_history_entry():
+    back = _NavCDP(history=_hist(1, ["http://a/", "http://a/items", "http://a/items/1"]))
+    assert back.back() is True
+    assert ("Page.navigateToHistoryEntry", {"entryId": 1}) in back.sent
+    fwd = _NavCDP(history=_hist(1, ["http://a/", "http://a/items", "http://a/items/1"]))
+    assert fwd.forward() is True
+    assert ("Page.navigateToHistoryEntry", {"entryId": 3}) in fwd.sent
+
+
+def test_history_ends_are_reported_instead_of_dispatching_a_no_op():
+    # Running off the end must be visible: a silent no-op reads to the caller as a
+    # successful back navigation, and the "back keeps state coherent" check then passes
+    # without ever having gone back.
+    start = _NavCDP(history=_hist(0, ["http://a/"]))
+    assert start.back() is False
+    assert "Page.navigateToHistoryEntry" not in start.methods()
+    end = _NavCDP(history=_hist(1, ["http://a/", "http://a/items"]))
+    assert end.forward() is False
+    assert "Page.navigateToHistoryEntry" not in end.methods()
+
+
+def test_history_step_is_false_without_a_usable_history():
+    assert _NavCDP().back() is False            # dead socket / Page domain says nothing
+
+
+def test_reload_waits_for_the_document_to_come_back():
+    cdp = _NavCDP()
+    assert cdp.reload() is True
+    assert "Page.reload" in cdp.methods() and cdp._load_count == 1
+
+
+def test_current_url_reads_the_history_not_the_page():
+    # A browser-side fact, so it survives a page whose JS threw or whose CSP is strict.
+    cdp = _NavCDP(history=_hist(1, ["http://a/", "http://a/items"]))
+    assert cdp.current_url() == "http://a/items"
+    assert "Runtime.evaluate" not in cdp.methods()
+
+
+def test_current_url_falls_back_to_the_page_then_to_empty():
+    cdp = _NavCDP(replies={"Runtime.evaluate": {"result": {"result": {"value": "http://a/x"}}}})
+    assert cdp.current_url() == "http://a/x"
+    assert _NavCDP().current_url() == ""
+
+
+def test_set_viewport_overrides_device_metrics_at_scale_factor_one():
+    cdp = _NavCDP()
+    assert cdp.set_viewport(375, 667, mobile=True) is True
+    # deviceScaleFactor 1 keeps screenshot px == CSS px == Input.* coords.
+    assert ("Emulation.setDeviceMetricsOverride",
+            {"width": 375, "height": 667, "deviceScaleFactor": 1, "mobile": True}) in cdp.sent
+    assert ("Emulation.setTouchEmulationEnabled",
+            {"enabled": True, "maxTouchPoints": 1}) in cdp.sent
+
+
+def test_set_viewport_refuses_a_nonsense_size_and_a_refusing_target():
+    cdp = _NavCDP()
+    assert cdp.set_viewport(0, 800) is False and cdp.set_viewport(375, -1) is False
+    assert cdp.sent == []
+    refused = _NavCDP(replies={"Emulation.setDeviceMetricsOverride":
+                               {"error": {"message": "not supported"}}})
+    assert refused.set_viewport(375, 667) is False
+    assert "Emulation.setTouchEmulationEnabled" not in refused.methods()
+
+
+def test_clear_viewport_override_drops_the_emulation():
+    cdp = _NavCDP()
+    assert cdp.clear_viewport_override() is True
+    assert "Emulation.clearDeviceMetricsOverride" in cdp.methods()
+    assert ("Emulation.setTouchEmulationEnabled",
+            {"enabled": False, "maxTouchPoints": 0}) in cdp.sent
+
+
+class _NavCDPStub:
+    """Adapter-facing fake: records what the adapter asked the CDP client to do."""
+
+    def __init__(self, url="http://localhost:3000/", ok=True):
+        self.url = url
+        self.ok = ok
+        self.eval_value = json.dumps([1280, 800])
+        self.navigated: list[str] = []
+        self.viewports: list[tuple[int, int, bool]] = []
+        self.calls: list[str] = []
+        self.cleared = 0
+
+    def current_url(self): return self.url
+    def evaluate(self, expr, await_promise=False): return self.eval_value
+
+    def _record(self, name):
+        self.calls.append(name)
+        return self.ok
+
+    def back(self): return self._record("back")
+    def forward(self): return self._record("forward")
+    def reload(self): return self._record("reload")
+
+    def navigate(self, url):
+        self.navigated.append(url)
+        return self.ok
+
+    def set_viewport(self, width, height, mobile=False):
+        self.viewports.append((width, height, mobile))
+        return self.ok
+
+    def clear_viewport_override(self):
+        self.cleared += 1
+        return self.ok
+
+
+def test_adapter_navigation_reports_that_it_cannot_rather_than_no_opping():
+    from inspector.adapters.base import SurfaceAdapter
+    a = _adapter(_NavCDPStub())
+    a.cdp = None
+    assert a.navigate("/x") is False and a.go_back() is False and a.go_forward() is False
+    assert a.reload() is False and a.set_viewport(375, 667) is False
+    # a surface with no navigation at all inherits the same falsy answer
+    assert SurfaceAdapter.navigate(a, "/x") is False
+    assert SurfaceAdapter.go_back(a) is False and SurfaceAdapter.go_forward(a) is False
+    assert SurfaceAdapter.reload(a) is False and SurfaceAdapter.set_viewport(a, 375, 667) is False
+
+
+def test_adapter_resolves_a_route_against_the_current_document():
+    a = _adapter(_NavCDPStub(url="http://localhost:3000/items"))
+    assert a.navigate("/does-not-exist") is True
+    assert a.cdp.navigated == ["http://localhost:3000/does-not-exist"]
+    assert a.go_back() and a.go_forward() and a.reload()
+    assert a.cdp.calls == ["back", "forward", "reload"]
+
+
+def test_navigate_refuses_to_replace_a_file_url_app_shell(monkeypatch):
+    # Page.navigate on a packaged Electron shell REPLACES the app: '/does-not-exist'
+    # resolves to file:///does-not-exist, the window blanks, and the router that could
+    # have routed back is gone with the document. Refuse loudly instead of doing it.
+    monkeypatch.delenv("INSPECTOR_ALLOW_ELECTRON_NAVIGATE", raising=False)
+    a = _adapter(_NavCDPStub(url="file:///Users/x/app/dist/index.html"))
+    assert a.navigate("/does-not-exist") is False
+    assert a.cdp.navigated == []
+
+
+def test_a_hash_route_stays_inside_the_app_shell(monkeypatch):
+    monkeypatch.delenv("INSPECTOR_ALLOW_ELECTRON_NAVIGATE", raising=False)
+    a = _adapter(_NavCDPStub(url="file:///Users/x/app/dist/index.html#/home"))
+    assert a.navigate("#/does-not-exist") is True
+    assert a.cdp.navigated == ["file:///Users/x/app/dist/index.html#/does-not-exist"]
+
+
+def test_the_file_url_guard_can_be_waived_deliberately(monkeypatch):
+    monkeypatch.setenv("INSPECTOR_ALLOW_ELECTRON_NAVIGATE", "1")
+    a = _adapter(_NavCDPStub(url="file:///Users/x/app/dist/index.html"))
+    assert a.navigate("/does-not-exist") is True
+    assert a.cdp.navigated == ["file:///does-not-exist"]
+
+
+def test_navigate_refuses_a_relative_path_with_nothing_to_resolve_it_against():
+    a = _adapter(_NavCDPStub(url=""))
+    assert a.navigate("/does-not-exist") is False
+    assert a.cdp.navigated == []
+
+
+def test_set_viewport_moves_the_click_coordinate_space_with_it():
+    """The load-bearing bit: `_viewport` is what bbox ratios are multiplied by, so a
+    resize that forgets to update it lands every later click at the OLD scale."""
+    a = _adapter(_NavCDPStub())
+    a.cdp.eval_value = json.dumps(
+        [{"label": "Save", "role": "button", "x": 100, "y": 200, "w": 80, "h": 40}])
+    wide = a.detect_elements(b"PNG")[0]
+    assert wide.center_px(*a.screen_size()) == (140, 220)
+
+    assert a.set_viewport(375, 667, mobile=True) is True
+    assert a.screen_size() == (375, 667)
+    assert a.cdp.viewports == [(375, 667, True)]
+
+    # the same button re-measured by the reflowed layout: full-bleed on a phone
+    a.cdp.eval_value = json.dumps(
+        [{"label": "Save", "role": "button", "x": 20, "y": 100, "w": 335, "h": 44}])
+    narrow = a.detect_elements(b"PNG")[0]
+    cx, cy = narrow.center_px(*a.screen_size())
+    assert cx == 187 and abs(cy - 122) <= 1        # centred on the 375px screen
+    # and what the stale 1280-wide space would have produced: off the right edge
+    assert narrow.center_px(1280, 800)[0] > a.screen_size()[0]
+
+
+def test_screenshot_downscales_to_the_new_viewport_after_a_resize():
+    import io
+
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (750, 1334), "white").save(buf, "PNG")
+    cdp = _NavCDPStub()
+    cdp.screenshot = lambda: buf.getvalue()
+    a = _adapter(cdp)
+    assert a.set_viewport(375, 667)
+    assert Image.open(io.BytesIO(a.screenshot())).size == (375, 667)
+
+
+def test_a_failed_resize_leaves_the_old_coordinate_space_intact():
+    a = _adapter(_NavCDPStub(ok=False))
+    assert a.set_viewport(375, 667) is False
+    assert a.screen_size() == (1280, 800)       # still the truth about the screen
+    a.cdp.viewports.clear()
+    assert a.set_viewport(0, 667) is False      # nonsense never reaches the browser
+    assert a.cdp.viewports == [] and a.screen_size() == (1280, 800)
+
+
+def test_clear_viewport_re_reads_the_real_size():
+    a = _adapter(_NavCDPStub())
+    assert a.set_viewport(375, 667)
+    a.cdp.eval_value = json.dumps([1280, 800])
+    assert a.clear_viewport() is True
+    assert a.cdp.cleared == 1 and a.screen_size() == (1280, 800)
+
+
 def test_get_adapter_local_vs_vm_electron():
     from inspector.adapters.electron import ElectronAdapter
     assert isinstance(get_adapter(Surface.ELECTRON, Config(execution="local")), LocalElectronAdapter)

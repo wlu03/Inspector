@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 
 from ..models import Element
 
@@ -251,9 +252,25 @@ class CDPClient:
         # because four separate CDP events describe a single request and they must all
         # land on the same row; insertion order doubles as the eviction order.
         self._network: dict[str, dict] = {}
+        # Monotonic count of Page.loadEventFired. Navigation waits on it INCREASING from
+        # a baseline taken before the command, which is race-proof: if the load fires
+        # while `_cmd` is still reading toward its own reply, the event is counted there
+        # and the wait returns instantly instead of blocking for a load already past.
+        self._load_count = 0
         self._timeout = timeout
 
     def _cmd(self, method: str, params: dict | None = None) -> dict:
+        return self._cmd_raw(method, params).get("result", {})
+
+    def _cmd_raw(self, method: str, params: dict | None = None) -> dict:
+        """Send one command and return the WHOLE reply envelope, {} if the socket is dead.
+
+        `_cmd` throws the envelope away and keeps `result`, which is fine for commands
+        that answer with data. It is not fine for the navigation/emulation commands,
+        whose successful `result` is itself `{}` — indistinguishable from the `{}` that
+        means "the socket is gone". Those callers have to return an honest can't-do-that
+        signal, so they read `error`/`result` off the envelope instead.
+        """
         self._id += 1
         mid = self._id
         try:
@@ -266,8 +283,13 @@ class CDPClient:
             except Exception:
                 return {}
             if msg.get("id") == mid:
-                return msg.get("result", {})
+                return msg
             self._on_event(msg)  # buffer console/log/exception events seen meanwhile
+
+    def _cmd_ok(self, method: str, params: dict | None = None) -> bool:
+        """True only when the browser actually acknowledged the command."""
+        env = self._cmd_raw(method, params)
+        return bool(env) and "error" not in env
 
     def _on_event(self, msg: dict) -> None:
         m = msg.get("method")
@@ -307,6 +329,8 @@ class CDPClient:
                 or ("canceled" if p.get("canceled") else "request failed")
             )
             _stamp_duration(rec, p.get("timestamp"))
+        elif m == "Page.loadEventFired":
+            self._load_count += 1
         elif m == "Network.loadingFinished":
             _stamp_duration(self._network_record(p.get("requestId")), p.get("timestamp"))
 
@@ -415,6 +439,162 @@ class CDPClient:
                   {"type": "mouseMoved", "x": x2, "y": y2, "button": "left"})
         self._cmd("Input.dispatchMouseEvent",
                   {"type": "mouseReleased", "x": x2, "y": y2, "button": "left", "clickCount": 1})
+
+    def _wait_for_load(self, baseline: int, timeout: float) -> bool:
+        """Block until Page.loadEventFired pushes `_load_count` past `baseline`.
+
+        This is what replaces the blind `time.sleep` a naive navigate would use: a sleep
+        either wastes seconds on a fast route or reads the DOM of the PREVIOUS page on a
+        slow one, and the second failure mode silently invents findings ("the button
+        disappeared") that are really just a screenshot taken too early. Events that
+        arrive meanwhile still go through `_on_event`, so console lines and requests
+        emitted during the load are kept rather than thrown away.
+
+        Returns False on a dead socket or when the budget runs out — the caller decides
+        what that means, because a page still loading has nonetheless navigated.
+        """
+        deadline = time.monotonic() + timeout
+        try:
+            while self._load_count == baseline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                try:
+                    self._ws.settimeout(remaining)
+                    msg = json.loads(self._ws.recv())
+                except Exception:
+                    return False  # socket timed out or died mid-load
+                self._on_event(msg)
+        finally:
+            try:
+                self._ws.settimeout(self._timeout)
+            except Exception:
+                pass
+        return True
+
+    def navigate(self, url: str, timeout: float = 15.0) -> bool:
+        """Point the page at `url` and wait for its load event. True if it went there.
+
+        The return value is deliberately a hard signal rather than None: a caller that
+        cannot tell a navigation apart from a no-op will happily report "the /does-not-
+        exist route renders fine" about a page that never left the home screen.
+
+        `errorText` on the reply means the browser REFUSED to go (bad scheme, host that
+        will not resolve) and is a False. A 404 from a server that did answer is not —
+        that navigation succeeded, and its status shows up on the network channel, which
+        is exactly the evidence a bogus-route probe is after. A load event that never
+        arrives inside the budget is also not a False: the page is somewhere new and
+        slow, and the caller should go look at it.
+        """
+        if not url:
+            return False
+        baseline = self._load_count
+        env = self._cmd_raw("Page.navigate", {"url": url})
+        result = env.get("result")
+        if not isinstance(result, dict) or result.get("errorText"):
+            return False
+        self._wait_for_load(baseline, timeout)
+        return True
+
+    def back(self) -> bool:
+        """Step one entry back in session history; False if there is nowhere to go."""
+        return self._history_step(-1)
+
+    def forward(self) -> bool:
+        """Step one entry forward in session history; False if there is nowhere to go."""
+        return self._history_step(1)
+
+    def _history_step(self, delta: int, timeout: float = 15.0) -> bool:
+        """Walk the navigation history by `delta` entries.
+
+        There is no Page.goBack in CDP — history is read as a list plus a cursor and
+        then re-entered by entry id. Doing it this way has a real benefit over a
+        synthesized `history.back()`: running off the end of the history is VISIBLE here
+        (the index simply has no neighbour), so we report it instead of dispatching a
+        no-op the caller would read as a successful back navigation.
+        """
+        hist = self._cmd("Page.getNavigationHistory")
+        entries = hist.get("entries") if isinstance(hist, dict) else None
+        index = hist.get("currentIndex") if isinstance(hist, dict) else None
+        if not isinstance(entries, list) or not isinstance(index, int):
+            return False
+        target = index + delta
+        if target < 0 or target >= len(entries):
+            return False
+        entry = entries[target] if isinstance(entries[target], dict) else {}
+        entry_id = entry.get("id")
+        if entry_id is None:
+            return False
+        baseline = self._load_count
+        if not self._cmd_ok("Page.navigateToHistoryEntry", {"entryId": entry_id}):
+            return False
+        # A restored entry can come back out of the back/forward cache without firing a
+        # load event at all, so the wait is best-effort and its result is not the verdict.
+        self._wait_for_load(baseline, timeout)
+        return True
+
+    def reload(self, timeout: float = 15.0) -> bool:
+        """Reload the current document and wait for it to load again."""
+        baseline = self._load_count
+        if not self._cmd_ok("Page.reload", {}):
+            return False
+        self._wait_for_load(baseline, timeout)
+        return True
+
+    def current_url(self) -> str:
+        """The URL of the document on screen, or '' when it cannot be read.
+
+        Read off the navigation history rather than by evaluating `location.href`: the
+        history is a browser-side fact that survives a page whose JS has thrown, a
+        strict CSP, or a document still parsing. The eval is kept only as a fallback for
+        a target that answers Runtime but not Page.
+        """
+        hist = self._cmd("Page.getNavigationHistory")
+        entries = hist.get("entries") if isinstance(hist, dict) else None
+        index = hist.get("currentIndex") if isinstance(hist, dict) else None
+        if isinstance(entries, list) and isinstance(index, int) and 0 <= index < len(entries):
+            entry = entries[index]
+            if isinstance(entry, dict) and entry.get("url"):
+                return str(entry["url"])
+        try:
+            return str(self.evaluate("location.href") or "")
+        except Exception:
+            return ""
+
+    def set_viewport(self, width: int, height: int, mobile: bool = False) -> bool:
+        """Resize the page to width x height CSS px (the responsive-layout probe).
+
+        deviceScaleFactor is pinned to 1 on purpose. The whole local pipeline assumes
+        screenshot pixels == CSS pixels == Input.* coordinates; a 2x capture would have
+        to be downscaled by the adapter on every frame, and any drift between the two
+        numbers lands every click somewhere other than where the agent looked.
+
+        `mobile` additionally flips the mobile flag (viewport meta tag honoured, mobile
+        UA layout) and touch emulation, because a "does it work at 375px" check that
+        keeps hover-only affordances alive is testing a layout no phone will ever render.
+        """
+        w, h = int(width or 0), int(height or 0)
+        if w <= 0 or h <= 0:
+            return False
+        ok = self._cmd_ok("Emulation.setDeviceMetricsOverride",
+                          {"width": w, "height": h, "deviceScaleFactor": 1,
+                           "mobile": bool(mobile)})
+        if ok:
+            self._cmd_ok("Emulation.setTouchEmulationEnabled",
+                         {"enabled": bool(mobile), "maxTouchPoints": 1 if mobile else 0})
+        return ok
+
+    def clear_viewport_override(self) -> bool:
+        """Hand the page back to the real window size.
+
+        Callers that track a viewport of their own (the local adapters do — clicks are
+        mapped through it) must re-read the size afterwards, since this restores a
+        number this client does not know.
+        """
+        ok = self._cmd_ok("Emulation.clearDeviceMetricsOverride")
+        self._cmd_ok("Emulation.setTouchEmulationEnabled", {"enabled": False,
+                                                            "maxTouchPoints": 0})
+        return ok
 
     def evaluate(self, expr: str, await_promise: bool = False):
         r = self._cmd("Runtime.evaluate",

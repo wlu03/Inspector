@@ -59,6 +59,40 @@ def test_local_web_captures_network_traffic():
     assert a.logs() == []                           # console stays a separate channel
 
 
+def test_local_web_can_route_and_resize():
+    """Routes and responsive layouts are where web bugs live: the local Chrome adapter
+    must inherit the CDP navigation/viewport primitives, not the base class's honest
+    'this surface cannot' False."""
+    for name in ("navigate", "go_back", "go_forward", "reload", "set_viewport"):
+        assert getattr(LocalWebAdapter, name) is getattr(LocalElectronAdapter, name)
+        assert getattr(LocalWebAdapter, name) is not getattr(SurfaceAdapter, name)
+
+    a = LocalWebAdapter(Config())
+    assert a.navigate("/does-not-exist") is False   # no CDP session yet → can't, and says so
+    a.cdp = _NavigatingCDP("http://localhost:3000/items")
+    # the file:// app-shell guard is Electron's problem; a served web app just routes
+    assert a.navigate("/does-not-exist") is True
+    assert a.cdp.navigated == ["http://localhost:3000/does-not-exist"]
+    assert a.set_viewport(375, 667, mobile=True) is True
+    assert a.screen_size() == (375, 667)            # clicks follow the resize
+
+
+class _NavigatingCDP:
+    def __init__(self, url):
+        self.url = url
+        self.navigated: list[str] = []
+
+    def current_url(self):
+        return self.url
+
+    def navigate(self, url):
+        self.navigated.append(url)
+        return True
+
+    def set_viewport(self, width, height, mobile=False):
+        return True
+
+
 class _AuditingCDP:
     def __init__(self, result):
         self._result = result

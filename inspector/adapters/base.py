@@ -87,6 +87,49 @@ class SurfaceAdapter(ABC):
         """
         return []
 
+    def navigate(self, url: str) -> bool:
+        """Send the app to `url`; True only if the surface actually went there.
+
+        Whole classes of bug live behind a route change — a dead link, a blank
+        /does-not-exist instead of a 404 view, state that survives a route it should
+        not. None of that is reachable while the only way in is the screen the app
+        happened to boot on.
+
+        The default is False, NOT a silent no-op, and that distinction is the contract:
+        a surface that cannot navigate (a phone screen with no address bar) must say so,
+        because a no-op that returns success reads to the caller as "the bogus route
+        rendered fine" about a page that never left home.
+        """
+        return False
+
+    def go_back(self) -> bool:
+        """Step back one entry in session history; False if the surface can't, or
+        if there is no entry to go back to (running off the end of the history is a
+        legitimate answer, not an error)."""
+        return False
+
+    def go_forward(self) -> bool:
+        """Step forward one entry in session history; False if unsupported or already
+        at the newest entry. Together with `go_back` this is what makes "back/forward
+        after navigating keeps state coherent" an executable check."""
+        return False
+
+    def reload(self) -> bool:
+        """Reload the current view; False if the surface can't. Reload is how state
+        that only LOOKS persisted gets caught — the optimistic update that was never
+        written, the form that silently lost its draft."""
+        return False
+
+    def set_viewport(self, width: int, height: int, mobile: bool = False) -> bool:
+        """Resize the app's viewport to width x height CSS px; False if unsupported.
+
+        The responsive checks (a ~375px phone width: no horizontal overflow, nothing
+        clipped or unclickable) cannot run on a screen size fixed at launch. A surface
+        that overrides this MUST also move whatever coordinate space it maps element
+        boxes through, or every click after the resize lands at the old scale.
+        """
+        return False
+
     def detect_elements(self, screenshot: bytes) -> list[Element] | None:
         """Optional native element source (the accessibility tree).
 
