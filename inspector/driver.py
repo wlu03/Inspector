@@ -67,6 +67,53 @@ _PROTOCOL = (
     '"expected": "...", "actual": "..."} or null}'
 )
 
+# The same contract as `_PROTOCOL`, expressed as a JSON schema so the Anthropic path
+# can hand it to structured outputs and get a decision that CANNOT fail to parse.
+# Schema rules: every object needs `additionalProperties: false` plus a full `required`
+# list, and numeric/string bounds are unsupported — the parsers still clamp and drop
+# hallucinated ids, so the schema only has to pin down the shape.
+_DECISION_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": sorted(_VALID_ACTIONS),
+            "description": "the single next action; 'done' ends the run",
+        },
+        "target_id": {
+            "anyOf": [{"type": "integer"}, {"type": "null"}],
+            "description": "id from the element list, or null when the action needs no target",
+        },
+        "text": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                 "description": "text to type, else null"},
+        "key": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                "description": "key name for a key action, else null"},
+        "expectation": {"type": "string",
+                        "description": "what should happen after this action"},
+        "reason": {"type": "string", "description": "one short sentence"},
+        "bug": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "severity": {"type": "string",
+                                     "enum": ["low", "medium", "high", "critical"]},
+                        "expected": {"type": "string"},
+                        "actual": {"type": "string"},
+                    },
+                    "required": ["summary", "severity", "expected", "actual"],
+                    "additionalProperties": False,
+                },
+                {"type": "null"},
+            ],
+            "description": "the defect you just observed, else null",
+        },
+    },
+    "required": ["action", "target_id", "text", "key", "expectation", "reason", "bug"],
+    "additionalProperties": False,
+}
+
 
 def _format_elements(elements: list[Element], limit: int = 40) -> str:
     rows = []
@@ -90,21 +137,51 @@ def _format_history(history: list[dict], limit: int = 8) -> str:
     return "\n".join(rows)
 
 
-def build_decision_prompt(
-    goal: str, elements: list[Element], history: list[dict], logs: list[str]
-) -> str:
-    """Assemble the text prompt sent alongside the Set-of-Mark screenshot. Pure."""
+def build_decision_prefix() -> str:
+    """The half of the decision prompt that is identical on every turn of every run.
+
+    Split out from the per-turn state so the Anthropic path can put it FIRST and hang
+    a cache breakpoint off it: prompt caching is a prefix match, so a single byte of
+    per-turn data ahead of the marker would make every step a cache miss. Pure, and
+    deliberately free of anything derived from the session.
+    """
     from .adversarial import catalog_text
 
-    recent_logs = "\n".join(f"  {ln}" for ln in (logs or [])[-12:]) or "  (none)"
     return (
         f"{_SYSTEM}\n\n"
+        f"ADVERSARIAL MOVES TO TRY (pick the one that fits what's on screen):\n"
+        f"{catalog_text()}"
+    )
+
+
+def build_decision_state(
+    goal: str, elements: list[Element], history: list[dict], logs: list[str]
+) -> str:
+    """The per-turn half: goal, what's on screen, what we already tried, fresh logs.
+
+    Everything here changes step to step, so it must sit AFTER the cache breakpoint
+    (and after the Set-of-Mark image, which changes too). Pure.
+    """
+    recent_logs = "\n".join(f"  {ln}" for ln in (logs or [])[-12:]) or "  (none)"
+    return (
         f"GOAL: {goal}\n\n"
         f"ELEMENTS (id → role: label):\n{_format_elements(elements)}\n\n"
         f"ACTIONS SO FAR:\n{_format_history(history)}\n\n"
-        f"RECENT LOGS:\n{recent_logs}\n\n"
-        f"ADVERSARIAL MOVES TO TRY (pick the one that fits what's on screen):\n"
-        f"{catalog_text()}\n\n"
+        f"RECENT LOGS:\n{recent_logs}"
+    )
+
+
+def build_decision_prompt(
+    goal: str, elements: list[Element], history: list[dict], logs: list[str]
+) -> str:
+    """The whole decision prompt as ONE string, for backends that take plain text.
+
+    The Replicate VLM has no content blocks and no structured outputs, so it needs
+    the JSON protocol spelled out and gets everything concatenated. Pure.
+    """
+    return (
+        f"{build_decision_prefix()}\n\n"
+        f"{build_decision_state(goal, elements, history, logs)}\n\n"
         f"{_PROTOCOL}"
     )
 
@@ -201,6 +278,18 @@ _MISSING_JUDGE = (
     '"reason": "<one short sentence>"}}'
 )
 
+_VERDICT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "is_bug": {"type": "boolean",
+                   "description": "true only when the element SHOULD be visible right now"},
+        "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+        "reason": {"type": "string", "description": "one short sentence"},
+    },
+    "required": ["is_bug", "severity", "reason"],
+    "additionalProperties": False,
+}
+
 
 def build_missing_judge_prompt(candidate, rendered: list[str]) -> str:
     """Prompt asking the brain whether a code-declared-but-absent element is a real
@@ -234,6 +323,17 @@ _REFUTE = (
     'Reply with ONLY JSON: {{"confirmed": true|false, "reason": "<one sentence>"}}'
 )
 
+_REFUTE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "confirmed": {"type": "boolean",
+                      "description": "false unless the screenshot clearly evidences the defect"},
+        "reason": {"type": "string", "description": "one sentence"},
+    },
+    "required": ["confirmed", "reason"],
+    "additionalProperties": False,
+}
+
 
 def build_refute_prompt(finding: dict) -> str:
     """Adversarial prompt asking the brain to refute a flagged finding. Pure."""
@@ -262,6 +362,29 @@ _PLAN = (
     "ELEMENTS:\n{elements}\n\nOVERALL GOAL: {goal}\n\n"
     'Reply with ONLY JSON: {{"parts": [{{"name": "...", "goal": "test ..."}}]}}'
 )
+
+# `parse_plan` still caps the list at 6 and truncates the strings — array-length and
+# string-length bounds aren't expressible in a structured-outputs schema.
+_PLAN_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "parts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "short name of the app part"},
+                    "goal": {"type": "string", "description": "a focused, adversarial test goal"},
+                },
+                "required": ["name", "goal"],
+                "additionalProperties": False,
+            },
+            "description": "2-6 distinct, reachable parts of the app",
+        },
+    },
+    "required": ["parts"],
+    "additionalProperties": False,
+}
 
 
 def build_plan_prompt(elements: list[Element], goal: str) -> str:
@@ -455,57 +578,116 @@ class FallbackDriver:
         return self.primary.plan(som, elements, goal)
 
 
+# Prompt caching only kicks in above a per-model minimum prefix length; below it the
+# breakpoint is silently a no-op (you pay the write premium and never read a hit), so
+# we only mark a prefix that actually clears the bar. Models absent from the table get
+# the conservative default rather than an optimistic guess.
+_CACHE_MIN_TOKENS: dict[str, int] = {
+    "claude-opus-5": 512,
+    "claude-sonnet-5": 1024,
+    "claude-sonnet-4-6": 1024,
+    "claude-haiku-4-5": 4096,
+}
+_DEFAULT_CACHE_MIN_TOKENS = 1024
+
+
+def _is_cacheable(text: str, model: str) -> bool:
+    """Whether `text` is long enough that a cache breakpoint on it can ever hit.
+
+    Deliberately arithmetic rather than a token-count API call: this runs on every
+    step of every run, and a ~4-chars-per-token estimate is accurate enough to decide
+    between "mark it" and "don't bother". Pure.
+    """
+    return len(text) // 4 >= _CACHE_MIN_TOKENS.get(model, _DEFAULT_CACHE_MIN_TOKENS)
+
+
 class AnthropicDriver:
     """SoM-grounded Claude driver — the high-quality brain.
 
-    Reuses the exact same prompt (`build_decision_prompt`) and parser
-    (`parse_decision`) as the Replicate driver, swapping the backend to the
-    Anthropic Messages API (Set-of-Mark image + text → JSON action). Needs
-    ANTHROPIC_API_KEY; `anthropic` is lazy-imported so the package + pure tests
-    run without the SDK.
+    Shares the prompt builders and the parsers with the Replicate driver, but takes a
+    different route to them: where the Replicate path scrapes JSON out of free text,
+    this one pins the reply with a per-call-site JSON schema (structured outputs), so a
+    decision cannot come back malformed and quietly demote the run to heuristic
+    exploration. Needs ANTHROPIC_API_KEY; `anthropic` is lazy-imported so the package +
+    pure tests run without the SDK.
     """
 
     def __init__(self, config: Config, model: str | None = None):
         self.config = config
-        # cheaper-by-default, configurable via INSPECTOR_DRIVER_MODEL (see Config)
+        # frontier-by-default, configurable via INSPECTOR_DRIVER_MODEL (see Config)
         self.model = model or config.driver_model
 
     def decide(
         self, som: bytes, elements: list[Element], goal: str,
         history: list[dict], logs: list[str],
     ) -> Decision:
-        prompt = build_decision_prompt(goal, elements, history, logs)
-        text = self._run_model(som, prompt)
+        text = self._run_model(
+            som,
+            build_decision_state(goal, elements, history, logs),
+            _DECISION_SCHEMA,
+            prefix=build_decision_prefix(),
+        )
         return parse_decision(text, elements)
 
     def judge_missing_element(self, candidate, rendered: list[str], screenshot: bytes) -> dict:
-        return parse_verdict(self._run_model(screenshot, build_missing_judge_prompt(candidate, rendered)))
+        return parse_verdict(self._run_model(
+            screenshot, build_missing_judge_prompt(candidate, rendered), _VERDICT_SCHEMA))
 
     def verify_finding(self, finding: dict, screenshot: bytes) -> dict:
-        return parse_refute_verdict(self._run_model(screenshot, build_refute_prompt(finding)))
+        return parse_refute_verdict(self._run_model(
+            screenshot, build_refute_prompt(finding), _REFUTE_SCHEMA))
 
     def plan(self, som: bytes, elements, goal: str) -> list[dict]:
-        return parse_plan(self._run_model(som, build_plan_prompt(elements, goal)))
+        return parse_plan(self._run_model(
+            som, build_plan_prompt(elements, goal), _PLAN_SCHEMA))
 
-    def _run_model(self, image_bytes: bytes, prompt: str) -> str:
+    def _run_model(
+        self,
+        image_bytes: bytes,
+        prompt: str,
+        schema: dict,
+        prefix: str | None = None,
+    ) -> str:
+        """One Messages call: optional cacheable prefix, the screenshot, then state.
+
+        Block order is load-bearing. Caching is a prefix match, so the invariant
+        instruction text has to precede both the Set-of-Mark image and the per-turn
+        state — put the image first and every turn invalidates the cache.
+
+        `output_config` carries the schema (guaranteeing parseable JSON) and a moderate
+        effort level: thinking is on by default on this generation and `max_tokens` caps
+        thinking PLUS response text together, so unbounded deliberation over a one-step
+        UI decision could starve the answer it's meant to produce. `temperature`/`top_p`
+        are not sent — the current models reject them.
+        """
         import base64
 
         import anthropic  # lazy
 
         client = anthropic.Anthropic(api_key=self.config.anthropic_api_key)
         b64 = base64.standard_b64encode(image_bytes).decode()
+
+        content: list[dict] = []
+        if prefix:
+            block: dict = {"type": "text", "text": prefix}
+            if _is_cacheable(prefix, self.model):
+                block["cache_control"] = {"type": "ephemeral"}
+            content.append(block)
+        content.append({"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": b64}})
+        content.append({"type": "text", "text": prompt})
+
         resp = client.messages.create(
             model=self.model,
-            max_tokens=512,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {
-                        "type": "base64", "media_type": "image/png", "data": b64}},
-                    {"type": "text", "text": prompt + "\n\nReply with ONLY the JSON object."},
-                ],
-            }],
+            max_tokens=2048,
+            output_config={
+                "format": {"type": "json_schema", "schema": schema},
+                "effort": "medium",
+            },
+            messages=[{"role": "user", "content": content}],
         )
+        # thinking blocks may lead the response — take the first text block, which
+        # structured outputs guarantees is the schema-valid JSON.
         return next((b.text for b in resp.content if b.type == "text"), "{}")
 
 

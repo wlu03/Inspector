@@ -80,9 +80,11 @@ class Config:
     # Driver: the brain for the one-call `test_app` autopilot. "replicate" only for now.
     driver_backend: str = "auto"  # auto → Claude when a key is present, else replicate
     driver_ref: str = DEFAULT_DRIVER_REF
-    # Anthropic-brain model (when driver_backend="anthropic"). Cheaper than Opus by
-    # default; override with INSPECTOR_DRIVER_MODEL (e.g. claude-haiku-4-5 = cheapest).
-    driver_model: str = "claude-sonnet-4-6"
+    # Anthropic-brain model (when driver_backend="anthropic"). Frontier by default: the
+    # brain IS the quality ceiling of an autonomous run, and a smarter model that finds
+    # the bug in 8 steps beats a cheaper one that burns 30 and misses it. Override with
+    # INSPECTOR_DRIVER_MODEL (e.g. claude-sonnet-5, or claude-haiku-4-5 = cheapest).
+    driver_model: str = "claude-opus-5"
 
     # macOS/iOS plane (tart VM). If macos_host is set, connect to an already-running
     # Mac/guest over SSH and skip tart (dev: localhost). Else tart clones the golden image.
@@ -201,7 +203,7 @@ class Config:
             omniparser_ref=_env("INSPECTOR_OMNIPARSER_REF", default=DEFAULT_OMNIPARSER_REF) or DEFAULT_OMNIPARSER_REF,
             driver_backend=_env("INSPECTOR_DRIVER", default="auto") or "auto",
             driver_model=_env("INSPECTOR_DRIVER_MODEL",
-                              default="claude-sonnet-4-6") or "claude-sonnet-4-6",
+                              default="claude-opus-5") or "claude-opus-5",
             macos_host=_env("INSPECTOR_MACOS_HOST"),
             macos_user=_env("INSPECTOR_MACOS_USER", default="admin") or "admin",
             macos_ssh_key=_env("INSPECTOR_MACOS_SSH_KEY"),

@@ -43,6 +43,12 @@ def test_default_backend_is_auto():
     assert Config().driver_backend == "auto"
 
 
+def test_default_brain_model_is_current_frontier(monkeypatch):
+    monkeypatch.delenv("INSPECTOR_DRIVER_MODEL", raising=False)
+    assert Config().driver_model == "claude-opus-5"
+    assert Config.from_env().driver_model == "claude-opus-5"
+
+
 # --- de-repetition: a stuck brain gets pushed to fresh elements, then stops ---
 
 def test_derep_explores_then_stops():

@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 from inspector.autopilot import run_autopilot
-from inspector.driver import DONE, Decision, build_decision_prompt, parse_decision
+from inspector.driver import (
+    DONE,
+    Decision,
+    build_decision_prefix,
+    build_decision_prompt,
+    build_decision_state,
+    parse_decision,
+)
 from inspector.loop import LoopGuard
 from inspector.models import ActionType, Element
 
@@ -20,6 +27,32 @@ def test_prompt_includes_goal_elements_and_protocol():
     assert "[0]" in prompt and "Save" in prompt
     assert "boom error" in prompt
     assert '"action"' in prompt  # the JSON protocol is spelled out
+
+
+def test_prefix_carries_the_static_half_only():
+    prefix = build_decision_prefix()
+    assert "TRY TO BREAK" in prefix          # the standing instructions
+    assert "FORMS:" in prefix                # the adversarial catalog
+    assert "GOAL:" not in prefix and "RECENT LOGS:" not in prefix
+
+
+def test_prefix_is_stable_across_differing_turns():
+    # the cache is a prefix match — this half must not vary with session state
+    assert build_decision_prefix() == build_decision_prefix()
+
+
+def test_state_carries_the_per_turn_half_only():
+    state = build_decision_state("test save", [_el(0, "Save")], history=[], logs=["boom error"])
+    assert "test save" in state and "Save" in state and "boom error" in state
+    assert "FORMS:" not in state
+
+
+def test_flat_prompt_is_prefix_then_state_then_protocol():
+    els = [_el(0, "Save")]
+    prompt = build_decision_prompt("test save", els, history=[], logs=[])
+    prefix_at = prompt.index(build_decision_prefix())
+    state_at = prompt.index(build_decision_state("test save", els, [], []))
+    assert prefix_at < state_at < prompt.index('"action"')
 
 
 # --- decision parsing ---
