@@ -47,11 +47,12 @@ def get_adapter(surface: Surface, config: Config, repo_path: str | None = None) 
         _guard_local_exec(config)
         from .local_electron import LocalElectronAdapter
         return LocalElectronAdapter(config)
-    # Local web via headless Chrome — opt-in when a URL or prebuilt dist is configured
-    # (for real apps like Angular/Capacitor that don't fit the E2B build-and-serve path).
-    import os as _os
-    if (config.execution == "local" and surface == Surface.WEB
-            and (_os.environ.get("INSPECTOR_WEB_URL") or _os.environ.get("INSPECTOR_WEB_DIST"))):
+    # Local web via headless Chrome. Unconditional: LocalWebAdapter resolves its URL
+    # from INSPECTOR_WEB_URL, then INSPECTOR_WEB_DIST, then the project's own dev
+    # command — so it works with no env vars set. Gating it on those two used to drop
+    # a "local" caller through to the E2B WebAdapter, which then billed a sandbox and
+    # died on a missing key; local must mean local.
+    if config.execution == "local" and surface == Surface.WEB:
         _guard_local_exec(config)
         from .local_web import LocalWebAdapter
         return LocalWebAdapter(config)
@@ -60,6 +61,16 @@ def get_adapter(surface: Surface, config: Config, repo_path: str | None = None) 
         _guard_local_exec(config)
         from .macos_native import MacNativeAdapter
         return MacNativeAdapter(config)
+    # Everything left for web/Electron is the E2B Linux plane. Fail here, with the name
+    # of the missing key and the local alternative, rather than several layers deeper
+    # inside the e2b client where the error is an opaque auth failure. Android/iOS use
+    # their own planes (emulator / tart), so they are not gated on this.
+    if surface in (Surface.WEB, Surface.ELECTRON) and not config.e2b_api_key:
+        raise RuntimeError(
+            f"sandboxed execution of the {surface.value} surface needs E2B_API_KEY, which is "
+            "not set. Set it, or run the app on this machine instead with "
+            "INSPECTOR_EXECUTION=local."
+        )
     return REGISTRY[surface](config)
 
 
